@@ -622,6 +622,26 @@ class Hero {
         this.focusZone=null;
         this.zoneIdleTicks = 0;
       }
+
+      if(this.focusZone){
+        const dz = dist(m.x,m.y,this.focusZone.x,this.focusZone.y);
+        if(dz < 420 && lvlGap<=levelGapLimit){
+          zoneMonsters.push({m,d,dz});
+        }
+      }
+    }
+    if(this.focusZone){
+      if(zoneMonsters.length>0){
+        this.zoneIdleTicks = 0;
+      } else {
+        this.zoneIdleTicks = Math.min(this.zoneIdleTicks+1, 360);
+        if(this.zoneIdleTicks>240){
+          this.focusZone = null;
+          this.patrolPoint = null;
+        }
+      }
+    } else {
+      this.zoneIdleTicks = 0;
     }
 
       // 1) Priorité : menace immédiate (peu importe le niveau si vraiment proche)
