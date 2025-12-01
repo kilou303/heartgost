@@ -288,6 +288,9 @@ class Hero {
     this.focusZone = null;
 
     this.reflectTimer = 0;
+
+    this.patrolPoint = null;
+    this.patrolTimer = 0;
   }
 
   get equipment(){ return this.inventory.filter(it=>it!==null); }
@@ -567,6 +570,7 @@ class Hero {
     this.attackTimer = Math.max(0,this.attackTimer-dt);
     this.spellTimer = Math.max(0,this.spellTimer-dt);
     this.reflectTimer = Math.max(0,this.reflectTimer-dt);
+    this.patrolTimer = Math.max(0,this.patrolTimer-dt);
 
     this.tryCastSpell(game);
     this.chooseTarget(game);
@@ -576,6 +580,8 @@ class Hero {
   // IA SIMPLIFIÉE ET PLUS INTELLIGENTE
   chooseTarget(game){
     const hero=this;
+
+    let zoneMonsters = [];
 
     // Nettoyage : si cible invalide ou atteinte, on oublie
     if(this.target && this.target.obj){
@@ -607,6 +613,13 @@ class Hero {
       if(d < nearestDist && lvlGap<=2){
         nearestDist = d;
         nearestMonster = m;
+      }
+
+      if(this.focusZone){
+        const dz = dist(m.x,m.y,this.focusZone.x,this.focusZone.y);
+        if(dz < 420 && lvlGap<=2){
+          zoneMonsters.push({m,d,dz});
+        }
       }
     }
     if(nearestMonster && nearestDist < 220){
@@ -666,45 +679,58 @@ class Hero {
     // 5) Chercher des démons adaptés au niveau, en priorisant la zone ciblée
     if(game.monsters.length>0){
       let best=null;
-      for(const m of game.monsters){
-        const lvlGap=Math.abs((m.level||1)-hero.level);
-        if(lvlGap>2) continue;
-        const d=dist(hero.x,hero.y,m.x,m.y);
-        if(d>450) continue;
-        if(this.focusZone){
-          const dz=dist(m.x,m.y,this.focusZone.x,this.focusZone.y);
-          if(dz>380) continue; // reste dans la zone visée
+      if(this.focusZone){
+        for(const entry of zoneMonsters){
+          const {m,d,dz} = entry;
+          if(d>500) continue;
           if(!best || dz<best.dz || (dz===best.dz && d<best.d)){
             best={m,d,dz};
           }
-        } else if(!best || d<best.d){
-          best={m,d};
         }
-      }
-      if(best){
-        this.target={type:"monster",obj:best.m};
-        return;
+        if(best){
+          this.target={type:"monster",obj:best.m};
+          return;
+        }
+        if(zoneMonsters.length>0){
+          zoneMonsters.sort((a,b)=>a.d-b.d);
+          this.target={type:"monster",obj:zoneMonsters[0].m};
+          this.patrolPoint=null;
+          return;
+        }
+      } else {
+        for(const m of game.monsters){
+          const lvlGap=Math.abs((m.level||1)-hero.level);
+          if(lvlGap>2) continue;
+          const d=dist(hero.x,hero.y,m.x,m.y);
+          if(d>450) continue;
+          if(!best || d<best.d){
+            best={m,d};
+          }
+        }
+        if(best){
+          this.target={type:"monster",obj:best.m};
+          return;
+        }
       }
     }
 
     // 6) Vagabondage : se recentrer sur la zone ciblée, sinon une forêt, sinon une ville
     if(this.focusZone){
-      const hasNearbyMonsters = game.monsters.some(m => {
-        const lvlGap=Math.abs((m.level||1)-hero.level);
-        if(lvlGap>2) return false;
-        const dz=dist(m.x,m.y,this.focusZone.x,this.focusZone.y);
-        return dz<420;
-      });
+      const hasNearbyMonsters = zoneMonsters.length>0;
 
       if(hasNearbyMonsters){
         this.target={type:"zone", obj:this.focusZone};
       } else {
-        // Pas de démon à proximité du portail : patrouiller en cercle plutôt que d'attendre devant.
-        const angle = Math.random()*Math.PI*2;
-        const radius = 90+Math.random()*70;
-        const px = clamp(this.focusZone.x + Math.cos(angle)*radius,0,WORLD_WIDTH);
-        const py = clamp(this.focusZone.y + Math.sin(angle)*radius,0,WORLD_HEIGHT);
-        this.target={type:"point", obj:{x:px,y:py}};
+        const shouldRefresh = !this.patrolPoint || this.patrolTimer<=0 || dist(hero.x,hero.y,this.patrolPoint.x,this.patrolPoint.y)<20;
+        if(shouldRefresh){
+          const angle = Math.random()*Math.PI*2;
+          const radius = 120+Math.random()*160;
+          const px = clamp(this.focusZone.x + Math.cos(angle)*radius,0,WORLD_WIDTH);
+          const py = clamp(this.focusZone.y + Math.sin(angle)*radius,0,WORLD_HEIGHT);
+          this.patrolPoint = {x:px,y:py};
+          this.patrolTimer = 4 + Math.random()*4;
+        }
+        this.target={type:"point", obj:this.patrolPoint};
       }
       return;
     }
