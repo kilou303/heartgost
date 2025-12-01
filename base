@@ -2465,6 +2465,35 @@ class Game {
     ctx.fillStyle="#a5d6a7"; ctx.font="9px Helvetica";
     ctx.fillText(`Biome : ${biome.charAt(0).toUpperCase()+biome.slice(1)}`,mx,biomeY);
 
+    const targetDesc = (()=>{
+      const target=hero.target;
+      if(!target || !target.obj) return "Aucune";
+      const obj=target.obj;
+      if(obj.x===undefined || obj.y===undefined) return "Aucune";
+      const distTo=Math.floor(dist(hero.x,hero.y,obj.x,obj.y));
+      const suffix = `- ${distTo}u`;
+      if(target.type==="monster"){
+        const name=obj.name||"Démon";
+        const lvl=obj.level||1;
+        return `${name} niv ${lvl} ${suffix}`;
+      }
+      if(target.type==="potion") return `Potion ${suffix}`;
+      if(target.type==="zone"){
+        const lvl=obj.level||1;
+        return `Portail niv ${lvl} ${suffix}`;
+      }
+      if(target.type==="town"){
+        const name=obj.name||"Ville";
+        return `${name} ${suffix}`;
+      }
+      if(target.type==="forest") return `Forêt ${suffix}`;
+      if(target.type==="point") return `Position ${suffix}`;
+      return "Aucune";
+    })();
+    const targetY=biomeY+16;
+    ctx.fillStyle="#cfd8dc"; ctx.font="9px Helvetica";
+    ctx.fillText(`Cible : ${targetDesc}`,mx,targetY);
+
     const spellName = hero.spell?hero.spell.name:"Aucun";
     const iconBoxX=panelX+panelW-84, iconBoxY=my;
     ctx.fillStyle="#2b3248";
