@@ -284,6 +284,9 @@ class Hero {
 
     this.target = null;
 
+    this.hasVisitedTown = false;
+    this.focusZone = null;
+
     this.reflectTimer = 0;
   }
 
@@ -581,8 +584,18 @@ class Hero {
         if(!game.monsters.includes(obj)) this.target=null;
       } else if(["town","forest","zone"].includes(this.target.type)){
         if(dist(hero.x,hero.y,obj.x,obj.y) < 45){
+          if(this.target.type==="town") this.hasVisitedTown = true;
+          if(this.target.type==="zone") this.focusZone = obj;
           this.target=null;
         }
+      }
+    }
+
+    // Maintenir le focus sur une zone adaptée au niveau
+    if(this.focusZone){
+      const levelDelta = Math.abs((this.focusZone.level||1) - hero.level);
+      if(this.focusZone.completed || levelDelta>2){
+        this.focusZone=null;
       }
     }
 
@@ -590,7 +603,8 @@ class Hero {
     let nearestMonster=null, nearestDist=Infinity;
     for(const m of game.monsters){
       const d = dist(hero.x,hero.y,m.x,m.y);
-      if(d < nearestDist){
+      const lvlGap = Math.abs((m.level||1)-hero.level);
+      if(d < nearestDist && lvlGap<=2){
         nearestDist = d;
         nearestMonster = m;
       }
@@ -613,33 +627,27 @@ class Hero {
       }
     }
 
-    // 3) Si des démons existent ailleurs, choisir un démon raisonnable
-    if(game.monsters.length>0){
-      let best=null;
-      for(const m of game.monsters){
-        const d=dist(hero.x,hero.y,m.x,m.y);
-        if(d>450) continue;
-        if(m.level > hero.level+2) continue; // évite trop haut niveau
-        if(!best || d<best.d) best={m,d};
+    // 3) Première étape de route : visiter une ville sûre
+    if(!this.hasVisitedTown){
+      const towns = game.pois.filter(p=>p.type==="town");
+      let bestTown=null, bestD=Infinity;
+      for(const t of towns){
+        const d=dist(hero.x,hero.y,t.x,t.y);
+        if(d<bestD){bestD=d;bestTown=t;}
       }
-      if(best){
-        this.target={type:"monster",obj:best.m};
+      if(bestTown){
+        this.target={type:"town",obj:bestTown};
         return;
       }
     }
 
-    // 4) Vagabondage intelligent
-    //   - Portails démoniaques du niveau <= héro
-    //   - sinon forêts
-    //   - sinon villes
-    const zones = game.pois.filter(p =>
-      p.type==="zone" &&
-      !p.completed &&
-      (p.level||1) <= hero.level &&
-      p.level >= hero.level-2 // évite trop bas
+    // 4) Caler un focus sur une zone de niveau équivalent
+    const zoneCandidates = game.pois.filter(p=>
+      p.type==="zone" && !p.completed && Math.abs((p.level||1)-hero.level)<=1
     );
-    const forests = game.pois.filter(p => p.type==="forest");
-    const towns = game.pois.filter(p => p.type==="town");
+    const secondaryZones = game.pois.filter(p=>
+      p.type==="zone" && !p.completed && Math.abs((p.level||1)-hero.level)<=2
+    );
 
     const pickNearest = (arr)=>{
       if(arr.length===0) return null;
@@ -651,23 +659,72 @@ class Hero {
       return best ? best.p : null;
     };
 
-    let dest = pickNearest(zones);
-    let type = "zone";
-    if(!dest){
-      dest = pickNearest(forests);
-      type = "forest";
-    }
-    if(!dest){
-      dest = pickNearest(towns);
-      type = "town";
+    if(!this.focusZone){
+      this.focusZone = pickNearest(zoneCandidates) || pickNearest(secondaryZones);
     }
 
-    if(dest){
-      this.target={type, obj:dest};
+    // 5) Chercher des démons adaptés au niveau, en priorisant la zone ciblée
+    if(game.monsters.length>0){
+      let best=null;
+      for(const m of game.monsters){
+        const lvlGap=Math.abs((m.level||1)-hero.level);
+        if(lvlGap>2) continue;
+        const d=dist(hero.x,hero.y,m.x,m.y);
+        if(d>450) continue;
+        if(this.focusZone){
+          const dz=dist(m.x,m.y,this.focusZone.x,this.focusZone.y);
+          if(dz>380) continue; // reste dans la zone visée
+          if(!best || dz<best.dz || (dz===best.dz && d<best.d)){
+            best={m,d,dz};
+          }
+        } else if(!best || d<best.d){
+          best={m,d};
+        }
+      }
+      if(best){
+        this.target={type:"monster",obj:best.m};
+        return;
+      }
+    }
+
+    // 6) Vagabondage : se recentrer sur la zone ciblée, sinon une forêt, sinon une ville
+    if(this.focusZone){
+      const hasNearbyMonsters = game.monsters.some(m => {
+        const lvlGap=Math.abs((m.level||1)-hero.level);
+        if(lvlGap>2) return false;
+        const dz=dist(m.x,m.y,this.focusZone.x,this.focusZone.y);
+        return dz<420;
+      });
+
+      if(hasNearbyMonsters){
+        this.target={type:"zone", obj:this.focusZone};
+      } else {
+        // Pas de démon à proximité du portail : patrouiller en cercle plutôt que d'attendre devant.
+        const angle = Math.random()*Math.PI*2;
+        const radius = 90+Math.random()*70;
+        const px = clamp(this.focusZone.x + Math.cos(angle)*radius,0,WORLD_WIDTH);
+        const py = clamp(this.focusZone.y + Math.sin(angle)*radius,0,WORLD_HEIGHT);
+        this.target={type:"point", obj:{x:px,y:py}};
+      }
       return;
     }
 
-    // 5) Fallback : si vraiment rien, aller vers le centre du monde
+    const forests = game.pois.filter(p => p.type==="forest");
+    const towns = game.pois.filter(p => p.type==="town");
+
+    const destForest = pickNearest(forests);
+    if(destForest){
+      this.target={type:"forest", obj:destForest};
+      return;
+    }
+
+    const destTown = pickNearest(towns);
+    if(destTown){
+      this.target={type:"town", obj:destTown};
+      return;
+    }
+
+    // 7) Fallback : si vraiment rien, aller vers le centre du monde
     this.target = {type:"point", obj:{x:WORLD_WIDTH/2,y:WORLD_HEIGHT/2}};
   }
 
@@ -2464,6 +2521,35 @@ class Game {
     let biomeY=info2Y+16;
     ctx.fillStyle="#a5d6a7"; ctx.font="9px Helvetica";
     ctx.fillText(`Biome : ${biome.charAt(0).toUpperCase()+biome.slice(1)}`,mx,biomeY);
+
+    const targetDesc = (()=>{
+      const target=hero.target;
+      if(!target || !target.obj) return "Aucune";
+      const obj=target.obj;
+      if(obj.x===undefined || obj.y===undefined) return "Aucune";
+      const distTo=Math.floor(dist(hero.x,hero.y,obj.x,obj.y));
+      const suffix = `- ${distTo}u`;
+      if(target.type==="monster"){
+        const name=obj.name||"Démon";
+        const lvl=obj.level||1;
+        return `${name} niv ${lvl} ${suffix}`;
+      }
+      if(target.type==="potion") return `Potion ${suffix}`;
+      if(target.type==="zone"){
+        const lvl=obj.level||1;
+        return `Portail niv ${lvl} ${suffix}`;
+      }
+      if(target.type==="town"){
+        const name=obj.name||"Ville";
+        return `${name} ${suffix}`;
+      }
+      if(target.type==="forest") return `Forêt ${suffix}`;
+      if(target.type==="point") return `Position ${suffix}`;
+      return "Aucune";
+    })();
+    const targetY=biomeY+16;
+    ctx.fillStyle="#cfd8dc"; ctx.font="9px Helvetica";
+    ctx.fillText(`Cible : ${targetDesc}`,mx,targetY);
 
     const spellName = hero.spell?hero.spell.name:"Aucun";
     const iconBoxX=panelX+panelW-84, iconBoxY=my;
