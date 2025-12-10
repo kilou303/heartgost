@@ -169,6 +169,13 @@ const PRE_FRAGMENT_TTL = 20.0;
 const PRE_FRAGMENT_DROP_CHANCE = 0.08;   // chance de pré-fragment instable sur la mort d'un monstre
 const STABLE_FRAGMENT_DROP_CHANCE = 0.0; // (géré via les bêtes magiques)
 
+// Commerce entre royaumes
+const CARAVAN_SPAWN_INTERVAL = 70.0;
+const CARAVAN_BASE_VALUE = 40;
+const CARAVAN_POTION_VALUE = 22;
+const CARAVAN_FRAGMENT_VALUE = 55;
+const POTION_SALE_PRICE = 25;
+
 // ===================== TILESET =====================
 
 const TILE = {
@@ -1381,6 +1388,9 @@ class Game {
     // Fragments instables & fragments stables pour les mutations
     this.preFragments = [];
     this.stableFragments = [];
+    // Commerce
+    this.caravans = [];
+    this.caravanTimer = 0;
     this.pois = [];
     this.towns = [];
     this.alliances = [];
@@ -1497,7 +1507,8 @@ class Game {
         isDemonCapital:false,
         demonSpawnTimer:0,
         hasDemonOverlord:false,
-        soldiers:[]
+        soldiers:[],
+        tradeFragments:0
       };
       towns.push(town);
       this.pois.push(town);
@@ -2409,6 +2420,86 @@ spawnNeutral(){
     }
   }
 
+  spawnCaravan(){
+    const towns = (this.towns && this.towns.length>0 ? this.towns : this.pois.filter(p=>p.type==="town"))
+      .filter(t=>!t.isDemonTown);
+    if(!towns || towns.length<2) return;
+
+    const sources = towns.filter(t=>{
+      const stock = (t.storedPotions||0) + (t.tradeFragments||0);
+      return stock>0 || (t.gold||0) > 400;
+    });
+    if(sources.length===0) return;
+
+    const from = randChoice(sources);
+    const possibleTargets = towns.filter(t=>t!==from && !this.areAlliancesAtWar(from.allianceId, t.allianceId));
+    if(possibleTargets.length===0) return;
+    const to = randChoice(possibleTargets);
+
+    // Marchandises : un mix de potions, fragments et or
+    const potions = Math.min(from.storedPotions||0, randInt(0,3));
+    from.storedPotions = Math.max(0, (from.storedPotions||0) - potions);
+
+    const fragments = Math.min(from.tradeFragments||0, randInt(0,2));
+    from.tradeFragments = Math.max(0, (from.tradeFragments||0) - fragments);
+
+    let tradeGold = Math.min(160, Math.floor((from.gold||0)*0.04));
+    from.gold = Math.max(0, (from.gold||0) - tradeGold);
+
+    const value = CARAVAN_BASE_VALUE + tradeGold + potions*CARAVAN_POTION_VALUE + fragments*CARAVAN_FRAGMENT_VALUE;
+    if(value<=0 && potions===0 && fragments===0) return;
+
+    const offset = () => Math.random()*18-9;
+    this.caravans.push({
+      from,
+      to,
+      x: from.x + offset(),
+      y: from.y + offset(),
+      speed: 60 + Math.random()*25,
+      goods: {potions, fragments, value},
+      progress: 0
+    });
+    this.logEvent(`Une caravane marchande quitte ${from.name} en direction de ${to.name}.`);
+  }
+
+  updateCaravans(dt){
+    this.caravanTimer += dt;
+    if(this.caravanTimer >= CARAVAN_SPAWN_INTERVAL){
+      this.caravanTimer = 0;
+      this.spawnCaravan();
+    }
+
+    const remaining = [];
+    for(const c of this.caravans){
+      const dx = c.to.x - c.x;
+      const dy = c.to.y - c.y;
+      const d = Math.hypot(dx,dy);
+      if(d<8){
+        const g = c.goods||{};
+        if(g.value) c.to.gold = (c.to.gold||0) + g.value;
+        if(g.potions) c.to.storedPotions = (c.to.storedPotions||0) + g.potions;
+        if(g.fragments) c.to.tradeFragments = (c.to.tradeFragments||0) + g.fragments;
+
+        if(c.from && c.to && c.from.allianceId!=null && c.to.allianceId!=null && !this.areAlliancesAtWar(c.from.allianceId,c.to.allianceId)){
+          this.adjustAllianceRelation(c.from.allianceId,c.to.allianceId,2);
+        }
+
+        const potLabel = g.potions||0;
+        const fragLabel = g.fragments||0;
+        const valLabel = g.value||0;
+        this.logEvent(`Caravane arrivée à ${c.to.name} : ${valLabel} or, ${potLabel} potion(s), ${fragLabel} fragment(s).`);
+        continue;
+      }
+
+      const step = c.speed*dt;
+      const dirx = dx/d, diry = dy/d;
+      c.x += dirx*step;
+      c.y += diry*step;
+      remaining.push(c);
+    }
+    this.caravans = remaining;
+  }
+
   updateTowns(dt){
     if(!this.towns || this.towns.length===0){
       this.towns = this.pois.filter(p=>p.type==="town");
@@ -2427,6 +2518,7 @@ spawnNeutral(){
         town.gold = 700;
       }
       town.storedPotions = town.storedPotions || 0;
+      town.tradeFragments = town.tradeFragments || 0;
       town.grade = town.grade || 1;
       town.isDemonTown = !!town.isDemonTown;
       if(!town.soldiers) town.soldiers = [];
@@ -2682,6 +2774,7 @@ spawnNeutral(){
     this.updateNeutrals(dt);
     this.updateLoot(dt);
     this.updateTowns(dt);
+    this.updateCaravans(dt);
 
     this.checkLootCollisions();
     this.checkTownInteractions();
@@ -4778,6 +4871,34 @@ updateVillageHeroes(dt){
       hero.backpack=[];
     }
 
+    // Vente de potions excédentaires à la ville
+    const sellablePotions = Math.max(0, hero.potionsCount-2);
+    if(sellablePotions>0 && (town.gold||0) > POTION_SALE_PRICE){
+      const maxAffordable = Math.floor((town.gold||0)/POTION_SALE_PRICE);
+      const sold = Math.min(sellablePotions, maxAffordable);
+      if(sold>0){
+        const gain = sold * POTION_SALE_PRICE;
+        hero.potionsCount -= sold;
+        hero.gold += gain;
+        town.gold -= gain;
+        town.storedPotions = (town.storedPotions||0) + sold;
+        this.logEvent(`${hero.name} vend ${sold} potion(s) à ${town.name} (+${gain} or).`);
+      }
+    }
+
+    // Remise de fragments stables au royaume pour le commerce
+    const spareFragments = Math.max(0, (hero.fragmentStableCount||0) - 10);
+    if(spareFragments>0){
+      const donated = Math.min(spareFragments, 8);
+      hero.fragmentStableCount -= donated;
+      town.tradeFragments = (town.tradeFragments||0) + donated;
+      const townBonus = donated * Math.floor(CARAVAN_FRAGMENT_VALUE * 0.6);
+      const heroBonus = donated * Math.floor(CARAVAN_FRAGMENT_VALUE * 0.4);
+      town.gold = (town.gold||0) + townBonus;
+      hero.gold += heroBonus;
+      this.logEvent(`${hero.name} confie ${donated} fragment(s) à ${town.name} pour alimenter le commerce (+${heroBonus} or héros, +${townBonus} or ville).`);
+    }
+
     // Soins & achats en ville
     if(hero.level < 7){
       // Comportement simple avant le niveau 7
@@ -5195,6 +5316,7 @@ updateVillageHeroes(dt){
     }
     for(const c of this.chests) this.drawChest(c,camX,camY);
     for(const s of this.shops) this.drawShop(s,camX,camY);
+    for(const cv of this.caravans) this.drawCaravan(cv,camX,camY);
     for(const n of this.neutrals) this.drawNeutral(n,camX,camY);
     for(const m of this.monsters) this.drawMonster(m,camX,camY);
     for(const vh of this.villageHeroes) this.drawVillageHero(vh,camX,camY);
@@ -5565,6 +5687,61 @@ drawBackground(camX,camY){
     ctx.font="9px Helvetica";
     ctx.textAlign="center";
     ctx.fillText("$",s.x,s.y+3);
+  }
+
+  drawCaravan(car,camX,camY){
+    const ctx=this.ctx;
+    const s=this.worldToScreen(car.x,car.y,camX,camY);
+    const r=10;
+
+    // trajet
+    if(car.to){
+      const dest=this.worldToScreen(car.to.x,car.to.y,camX,camY);
+      ctx.save();
+      ctx.setLineDash([4,4]);
+      ctx.strokeStyle="rgba(255,255,255,0.35)";
+      ctx.beginPath();
+      ctx.moveTo(s.x,s.y);
+      ctx.lineTo(dest.x,dest.y);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    ctx.save();
+    ctx.fillStyle="#f4a261";
+    ctx.strokeStyle="#7f5539";
+    ctx.lineWidth=2;
+    ctx.beginPath();
+    ctx.rect(s.x-r,s.y-r+3,r*2,r*0.9);
+    ctx.fill();
+    ctx.stroke();
+
+    // roues
+    ctx.beginPath();
+    ctx.arc(s.x-r+5,s.y+r-2,3,0,Math.PI*2);
+    ctx.arc(s.x+r-5,s.y+r-2,3,0,Math.PI*2);
+    ctx.fillStyle="#3e2723";
+    ctx.fill();
+
+    // bannière
+    ctx.beginPath();
+    ctx.moveTo(s.x,s.y-r-2);
+    ctx.lineTo(s.x,s.y-r-10);
+    ctx.lineTo(s.x+10,s.y-r-6);
+    ctx.closePath();
+    ctx.fillStyle="#ffd166";
+    ctx.fill();
+    ctx.stroke();
+
+    // icône de cargaison
+    const goods = car.goods || {};
+    const pot = goods.potions||0;
+    const frg = goods.fragments||0;
+    ctx.fillStyle="#1b4332";
+    ctx.font="8px Helvetica";
+    ctx.textAlign="center";
+    ctx.fillText(`P${pot}/F${frg}`, s.x, s.y+3);
+    ctx.restore();
   }
 
   // Neutres = "moutons" ronds avec niveau
@@ -6054,8 +6231,13 @@ drawBackground(camX,camY){
     const fragLabel = hero.fragmentUltimateUnlocked ? "Mutation : Ultime prêt" : (`Mutation : ${fragCount}/10`);
     ctx.fillText(`Or : ${hero.gold}   Potions : ${hero.potionsCount}   Sac : ${hero.backpack.length}   Fragments : ${fragLabel}`,mx,info2Y);
 
+    const caravanY = info2Y+14;
+    const caravanCount = this.caravans ? this.caravans.length : 0;
+    ctx.fillStyle="#a5d6a7"; ctx.font="9px Helvetica";
+    ctx.fillText(`Commerce : ${caravanCount} caravane(s) en route`,mx,caravanY);
+
     const biome=this.getBiome(hero.x,hero.y);
-    let biomeY=info2Y+16;
+    let biomeY=caravanY+14;
     ctx.fillStyle="#a5d6a7"; ctx.font="9px Helvetica";
     ctx.fillText(`Biome : ${biome.charAt(0).toUpperCase()+biome.slice(1)}`,mx,biomeY);
 
