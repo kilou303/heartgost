@@ -40,6 +40,8 @@ const WORLD_HEIGHT = 10000;
 
 const TILE_SIZE = 48;
 
+const MAX_LEVEL = 50;
+
 // Temps : 20 secondes IRL = 1 an en jeu
 const YEAR_DURATION = 20.0;      // 20s -> 1 an
 const AGING_PERIOD_YEARS = 50;   // tous les 50 ans
@@ -674,14 +676,17 @@ class Hero {
 
   gainXp(amount){
     if(this.passive && this.passive.xpBonus) amount = Math.floor(amount*(1+this.passive.xpBonus));
+    if(this.level >= MAX_LEVEL){ this.xp = 0; this.xpToNext = Infinity; return; }
     this.xp += amount;
-    while(this.xp >= this.xpToNext){
+    while(this.xp >= this.xpToNext && this.level < MAX_LEVEL){
       this.xp -= this.xpToNext;
       this.levelUp();
     }
+    if(this.level >= MAX_LEVEL){ this.xp = 0; this.xpToNext = Infinity; }
   }
 
   levelUp(){
+    if(this.level >= MAX_LEVEL) return;
     this.level++;
     this.maxHp += 5;
     this.baseAttack += 1;
@@ -1146,7 +1151,9 @@ class Hero {
 class Vagabond {
   constructor(x,y){
     // Comme le héros principal mais sans quête centrale
-    this.name = randChoice(HERO_NAMES)+" le Vagabond";
+    this.baseName = randChoice(HERO_NAMES);
+    this.title = randChoice(HERO_TITLES);
+    this.name = `${this.baseName} ${this.title}`;
     this.x = x;
     this.y = y;
     this.level = 1;
@@ -1190,14 +1197,17 @@ class Vagabond {
 
   gainXp(amount){
     if(this.dead || amount<=0) return;
+    if(this.level >= MAX_LEVEL){ this.xp = 0; this.xpToNext = Infinity; return; }
     this.xp += amount;
-    while(this.xp >= this.xpToNext){
+    while(this.xp >= this.xpToNext && this.level < MAX_LEVEL){
       this.xp -= this.xpToNext;
       this.levelUp();
     }
+    if(this.level >= MAX_LEVEL){ this.xp = 0; this.xpToNext = Infinity; }
   }
 
   levelUp(){
+    if(this.level >= MAX_LEVEL) return;
     this.level++;
     this.maxHp += 3;
     this.attack += 1;
@@ -1220,7 +1230,7 @@ class VillageHero {
 
     this.x = town.x + (Math.random()*40-20);
     this.y = town.y + (Math.random()*40-20);
-    this.level = clamp((town.level||1)+randInt(-1,1),1,99);
+    this.level = clamp((town.level||1)+randInt(-1,1),1,MAX_LEVEL);
 
     this.maxHp = 14 + this.level*2;
     this.hp = this.maxHp;
@@ -1266,13 +1276,18 @@ class VillageHero {
 
   gainXp(amount){
     this.xp += amount;
-    while(this.xp >= this.xpToNext){
+    while(this.xp >= this.xpToNext && this.level < MAX_LEVEL){
       this.xp -= this.xpToNext;
       this.levelUp();
+    }
+    if(this.level >= MAX_LEVEL){
+      this.xp = 0;
+      this.xpToNext = Infinity;
     }
   }
 
   levelUp(){
+    if(this.level >= MAX_LEVEL) return;
     this.level++;
     this.maxHp += 5;
     this.hp = this.maxHp;
@@ -1292,11 +1307,12 @@ class AllianceSoldier {
   constructor(town){
     this.town = town;
     this.allianceId = town.allianceId;
-    this.level = Math.max(1,(town.level||1)-1);
+    this.level = clamp(Math.max(1,(town.level||1)-1),1,MAX_LEVEL);
 
     // Nom aléatoire pour le soldat, lié à sa ville
     this.baseName = randChoice(HERO_NAMES);
-    this.name = this.baseName + " de " + town.name;
+    this.title = randChoice(HERO_TITLES);
+    this.name = `${this.baseName} ${this.title} de ${town.name}`;
 
     // Stats de base
     this.maxHp = 14 + this.level*3;
@@ -1349,14 +1365,17 @@ class AllianceSoldier {
 
   gainXp(amount){
     if(this.dead || amount<=0) return;
+    if(this.level >= MAX_LEVEL){ this.xp = 0; this.xpToNext = Infinity; return; }
     this.xp += amount;
-    while(this.xp >= this.xpToNext){
+    while(this.xp >= this.xpToNext && this.level < MAX_LEVEL){
       this.xp -= this.xpToNext;
       this.levelUp();
     }
+    if(this.level >= MAX_LEVEL){ this.xp = 0; this.xpToNext = Infinity; }
   }
 
   levelUp(){
+    if(this.level >= MAX_LEVEL) return;
     this.level++;
     // scaling simple mais sensible
     this.maxHp += 4;
@@ -2912,8 +2931,6 @@ spawnNeutral(){
 
   spawnMonsterAtNest(nest){
     let attempts=0, spawnX=null, spawnY=null;
-    const towns = this.pois.filter(p=>p.type==="town");
-
     // On détecte si ce nid est au centre d'une forêt
     const isForestNest = this.pois.some(p=>p.type==="forest" && dist(p.x,p.y,nest.x,nest.y)<20);
 
@@ -2925,22 +2942,16 @@ spawnNeutral(){
       const d = isForestNest ? (5+Math.random()*35) : (80+Math.random()*220);
       const mx = clamp(nest.x + Math.cos(ang)*d,0,WORLD_WIDTH);
       const my = clamp(nest.y + Math.sin(ang)*d,0,WORLD_HEIGHT);
-      let tooCloseTown=false;
-      for(const t of towns){
-        // On évite de spawn trop près des villes humaines, mais pas des cités démoniaques
-        if(!t.isDemonTown && dist(mx,my,t.x,t.y)<220){tooCloseTown=true;break;}
-      }
-      if(tooCloseTown) continue;
       const tile=this.getTileAt(mx,my);
-      // On évite l'eau et les villes humaines, mais on autorise les cités démoniaques
-      if(tile===TILE.WATER || tile===TILE.TOWN) continue;
+      // On évite seulement l'eau : les démons peuvent désormais apparaître en ville
+      if(tile===TILE.WATER) continue;
       // Pour les nids en forêt : forcer un spawn sur une case de forêt
       if(isForestNest && tile!==TILE.FOREST) continue;
       spawnX=mx; spawnY=my; break;
     }
     if(spawnX===null) return;
 
-    const lvl = clamp(nest.level + randInt(-1,2),1,99);
+    const lvl = clamp(nest.level + randInt(-1,2),1,MAX_LEVEL);
 
     let hpBoost=0, atkBoost=0, speedMult=1;
     const localBiome = this.getBiome(spawnX,spawnY);
@@ -3079,7 +3090,7 @@ spawnNeutral(){
     if(spawnX===null) return;
 
     const baseLvl = town.level || 1;
-    const lvl = clamp(baseLvl + randInt(0,2),1,99);
+    const lvl = clamp(baseLvl + randInt(0,2),1,MAX_LEVEL);
 
     let hpBoost=0, atkBoost=0, speedMult=1;
     const localBiome = this.getBiome(spawnX,spawnY);
@@ -3173,7 +3184,7 @@ spawnNeutral(){
     // Bête magique née d'un fragment instable : mini-boss agressif
     const hero = this.hero;
     const baseLevel = hero ? Math.max(5, hero.level) : 5;
-    const lvl = clamp(baseLevel + randInt(-1,2), 3, 99);
+    const lvl = clamp(baseLevel + randInt(-1,2), 3, MAX_LEVEL);
     const biome = this.getBiome(x,y);
     const m = {
       x:x,
@@ -3308,7 +3319,7 @@ spawnNeutral(){
       }
       if(tooCloseZone) continue;
 
-      const lvl = clamp(baseLevel + randInt(-1,1),1,99);
+      const lvl = clamp(baseLevel + randInt(-1,1),1,MAX_LEVEL);
       const zone={type:"zone",level:lvl,x,y,completed:false,isDynamic:true};
       this.pois.push(zone);
       this.demonNests.push({
@@ -3338,7 +3349,7 @@ spawnNeutral(){
     // Sinon, petite chance de spawn (mais pas trop de portails simultanés)
     if(activePortals.length >= 4) return;
     if(Math.random()<0.5){
-      const baseLvl = clamp(hero.level + randInt(-3,2),1,99);
+      const baseLvl = clamp(hero.level + randInt(-3,2),1,MAX_LEVEL);
       this.spawnRandomPortal(baseLvl);
     }
   }
@@ -4099,19 +4110,22 @@ updateVillageHeroes(dt){
 
   monsterGainXp(monster, amount){
     if(!monster) return;
+    if((monster.level || 1) >= MAX_LEVEL){ monster.xp = 0; monster.xpToNext = Infinity; return; }
     if(monster.xp == null) monster.xp = 0;
     if(monster.xpToNext == null){
       const lvl = monster.level || 1;
       monster.xpToNext = 10 + 2*lvl;
     }
     monster.xp += amount;
-    while(monster.xp >= monster.xpToNext){
+    while(monster.xp >= monster.xpToNext && (monster.level||1) < MAX_LEVEL){
       monster.xp -= monster.xpToNext;
       this.monsterLevelUp(monster);
     }
+    if((monster.level||1) >= MAX_LEVEL){ monster.xp = 0; monster.xpToNext = Infinity; }
   }
 
   monsterLevelUp(monster){
+    if((monster.level||1) >= MAX_LEVEL) return;
     monster.level = (monster.level || 1) + 1;
     monster.maxHp = (monster.maxHp || 10) + 6;
     monster.hp = monster.maxHp;
@@ -4171,6 +4185,16 @@ updateVillageHeroes(dt){
         const d=dist(m.x,m.y,s.x,s.y);
         if(d<bestTarget.dist){
           bestTarget={obj:s,dist:d,type:"soldier"};
+        }
+      }
+      // et les vagabonds errants
+      if(this.vagabonds){
+        for(const v of this.vagabonds){
+          if(!v || !v.isAlive || !v.isAlive()) continue;
+          const d=dist(m.x,m.y,v.x,v.y);
+          if(d<bestTarget.dist){
+            bestTarget={obj:v,dist:d,type:"vagabond"};
+          }
         }
       }
 
@@ -4259,7 +4283,7 @@ updateVillageHeroes(dt){
           hero.y -= diry*KNOCKBACK_SELF*0.4;
           this.spawnEffect("reflectHit",{start:{x:hero.x,y:hero.y},end:{x:m.x,y:m.y},color});
         } else {
-          const defTarget = (bestTarget.type==="hero" || bestTarget.type==="villageHero" || bestTarget.type==="neutral" || bestTarget.type==="soldier")
+          const defTarget = (bestTarget.type==="hero" || bestTarget.type==="villageHero" || bestTarget.type==="neutral" || bestTarget.type==="soldier" || bestTarget.type==="vagabond")
             ? bestTarget.obj
             : hero;
           const dmg = computeSpellDamage(m, defTarget, m.spell, this, 1.0);
@@ -4322,7 +4346,7 @@ updateVillageHeroes(dt){
           } else {
             const defTarget = (bestTarget.type==="hero")
               ? hero
-              : ((bestTarget.type==="villageHero" || bestTarget.type==="soldier") ? bestTarget.obj : null);
+              : ((bestTarget.type==="villageHero" || bestTarget.type==="soldier" || bestTarget.type==="vagabond") ? bestTarget.obj : null);
             if(defTarget){
               const dmgH=Math.max(1,m.attack - (defTarget.defense||0));
               const beforeHp = defTarget.hp;
@@ -5365,6 +5389,14 @@ updateVillageHeroes(dt){
     ctx.strokeStyle="#111";
     ctx.strokeRect(bx,by,bw,bh);
 
+    // Nom et niveau au-dessus de la barre de vie
+    let label = vag.name || "Vagabond";
+    if(vag.level != null) label += ` (Niv ${vag.level})`;
+    ctx.font = "10px sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillStyle = "#e8f5e9";
+    ctx.fillText(label, s.x, by-3);
+
     ctx.restore();
   }
 
@@ -6231,13 +6263,8 @@ drawBackground(camX,camY){
     const fragLabel = hero.fragmentUltimateUnlocked ? "Mutation : Ultime prêt" : (`Mutation : ${fragCount}/10`);
     ctx.fillText(`Or : ${hero.gold}   Potions : ${hero.potionsCount}   Sac : ${hero.backpack.length}   Fragments : ${fragLabel}`,mx,info2Y);
 
-    const caravanY = info2Y+14;
-    const caravanCount = this.caravans ? this.caravans.length : 0;
-    ctx.fillStyle="#a5d6a7"; ctx.font="9px Helvetica";
-    ctx.fillText(`Commerce : ${caravanCount} caravane(s) en route`,mx,caravanY);
-
     const biome=this.getBiome(hero.x,hero.y);
-    let biomeY=caravanY+14;
+    let biomeY=info2Y+14;
     ctx.fillStyle="#a5d6a7"; ctx.font="9px Helvetica";
     ctx.fillText(`Biome : ${biome.charAt(0).toUpperCase()+biome.slice(1)}`,mx,biomeY);
 
