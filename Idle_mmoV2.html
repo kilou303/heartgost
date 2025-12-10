@@ -178,6 +178,15 @@ const CARAVAN_POTION_VALUE = 22;
 const CARAVAN_FRAGMENT_VALUE = 55;
 const POTION_SALE_PRICE = 25;
 
+// Parchemin d'XP en ville
+const XP_SCROLL_BASE_COST = 140;
+const XP_SCROLL_COST_PER_GRADE = 90;
+const XP_SCROLL_BASE_XP = 40;
+const XP_SCROLL_XP_PER_GRADE = 28;
+
+// Événements de vie des villes
+const TOWN_LIFE_EVENT_INTERVAL = 55.0;
+
 // ===================== TILESET =====================
 
 const TILE = {
@@ -1469,6 +1478,9 @@ class Game {
     this.portalSpawnTimer = 0;
     this.allianceWarTimer = 0;
 
+    // Vie et interactions de villes
+    this.townLifeTimer = 0;
+
     // Temps du monde (années) : 20s = 1 an
     this.worldTime = 0;      // temps total en secondes
     this.worldYears = 0;     // années écoulées
@@ -2519,6 +2531,56 @@ spawnNeutral(){
     this.caravans = remaining;
   }
 
+  triggerTownLifeEvent(){
+    const towns = (this.towns && this.towns.length>0 ? this.towns : this.pois.filter(p=>p.type==="town"))
+      .filter(t=>!t.isDemonTown);
+    if(!towns.length) return;
+
+    const town = randChoice(towns);
+    const grade = Math.max(1, town.grade||1);
+    const roll = Math.random();
+
+    if(roll < 0.35){
+      // Fête locale : génère de l'or et motive les marchands
+      const gain = 60 + grade*25;
+      town.gold = (town.gold||0) + gain;
+      this.logEvent(`Fête à ${town.name} (Grade ${grade}) : +${gain} or et afflux de marchands.`);
+      // Les fêtes attirent des caravanes supplémentaires
+      if(Math.random()<0.6) this.spawnCaravan();
+    } else if(roll < 0.7){
+      // Entraînement commun : soldats et héros alliés gagnent de l'expérience
+      const friendlySoldiers = (town.soldiers||[]).filter(s=>s && !s.dead);
+      const xpGain = 4 + grade*2;
+      if(friendlySoldiers.length){
+        friendlySoldiers.forEach(s=>s.gainXp && s.gainXp(xpGain));
+      }
+      const alliedVagabonds = (this.vagabonds||[]).filter(v=>!v.dead && (!v.allianceId || v.allianceId===town.allianceId));
+      if(alliedVagabonds.length){
+        alliedVagabonds.forEach(v=>v.gainXp(xpGain));
+      }
+      if(friendlySoldiers.length || alliedVagabonds.length){
+        this.logEvent(`Entraînement commun à ${town.name} : les troupes gagnent ${xpGain} XP.`);
+      }
+    } else {
+      // Marché régional : transfert de ressources et amélioration des relations
+      const transfer = 40 + grade*18;
+      town.gold = (town.gold||0) + transfer;
+      if(Math.random()<0.5) this.spawnCaravan();
+      const allies = this.towns.filter(t=>t!==town && !t.isDemonTown && t.allianceId===town.allianceId);
+      if(allies.length){
+        const partner = randChoice(allies);
+        const share = Math.floor(transfer*0.4);
+        partner.gold = (partner.gold||0) + share;
+        this.logEvent(`Marché commun entre ${town.name} et ${partner.name} : ${share} or partagé et relations renforcées.`);
+        if(town.allianceId!=null && partner.allianceId!=null){
+          this.adjustAllianceRelation(town.allianceId, partner.allianceId, 1);
+        }
+      } else {
+        this.logEvent(`Marché régional à ${town.name} : les artisans prospèrent (+${transfer} or).`);
+      }
+    }
+  }
+
   updateTowns(dt){
     if(!this.towns || this.towns.length===0){
       this.towns = this.pois.filter(p=>p.type==="town");
@@ -2591,6 +2653,13 @@ spawnNeutral(){
         town.grade = (town.grade||1) + 1;
         this.logEvent(`${town.name} monte au grade ${town.grade}.`);
       }
+    }
+
+    // Événements de vie de ville pour animer le monde
+    this.townLifeTimer += dt;
+    if(this.townLifeTimer >= TOWN_LIFE_EVENT_INTERVAL){
+      this.townLifeTimer = 0;
+      this.triggerTownLifeEvent();
     }
   }
 
@@ -3360,8 +3429,19 @@ spawnNeutral(){
   
   updateVagabonds(dt){
     if(!this.vagabonds || this.vagabonds.length===0) return;
+    const survivors = [];
     for(const v of this.vagabonds){
-      if(!v || v.dead) continue;
+      if(!v) continue;
+      if(v.hp<=0 || v.dead){
+        if(!v.dead){
+          v.dead = true;
+        }
+        if(!v.deathLogged){
+          this.logEvent(`Le vagabond ${v.name} meurt en errant : fin de son histoire.`);
+          v.deathLogged = true;
+        }
+        continue;
+      }
 
       // Timers d'attaque / sort
       v.attackTimer = Math.max(0, v.attackTimer-dt);
@@ -3570,7 +3650,12 @@ spawnNeutral(){
         v.hallAdded = true;
         this.logEvent(`${v.name} entre au Hall des héros en tant qu'aventurier de Niv ${v.level}.`);
       }
+
+      survivors.push(v);
     }
+
+    // Nettoyage pour libérer des slots de spawn et alléger les boucles
+    this.vagabonds = survivors;
   }
 
 updateVillageHeroes(dt){
@@ -3769,6 +3854,10 @@ updateVillageHeroes(dt){
     for(const s of this.soldiers){
       // soldats morts : mort définitive, on les enlève des listes
       if(s.dead || s.hp<=0){
+        if(!s.deathLogged){
+          this.logEvent(`Le soldat ${s.name} tombe au combat : mort définitive.`);
+          s.deathLogged = true;
+        }
         s.dead = true;
         if(s.town && s.town.soldiers){
           s.town.soldiers = s.town.soldiers.filter(x=>x!==s);
@@ -4964,6 +5053,32 @@ updateVillageHeroes(dt){
         hero.addEquipment(item);
         this.logEvent(`(Lv7+) Achat d'équipement à ${town.name} : ${item.name}.`);
       }
+    }
+
+    // Parchemin d'expérience dépendant du grade de la ville
+    const townGrade = Math.max(1, town.grade||1);
+    const scrollCost = XP_SCROLL_BASE_COST + (townGrade-1)*XP_SCROLL_COST_PER_GRADE;
+    if(hero.gold >= scrollCost){
+      hero.gold -= scrollCost;
+      const townShare = Math.floor(scrollCost*0.5);
+      town.gold = (town.gold||0) + townShare;
+      const xpGain = XP_SCROLL_BASE_XP + townGrade*XP_SCROLL_XP_PER_GRADE;
+      hero.gainXp(xpGain);
+      this.logEvent(`${hero.name} achète un parchemin d'expérience à ${town.name} (Grade ${townGrade}) : +${xpGain} XP.`);
+    }
+
+    // Interactions locales : échanges avec soldats et vagabonds proches
+    const interactionXp = 2 + townGrade;
+    const nearbySoldiers = (this.soldiers||[]).filter(s=>!s.dead && s.town===town && dist(hero.x,hero.y,s.x,s.y)<140);
+    const nearbyVagabonds = (this.vagabonds||[]).filter(v=>!v.dead && dist(hero.x,hero.y,v.x,v.y)<140);
+    if(nearbySoldiers.length){
+      nearbySoldiers.forEach(s=>s.gainXp && s.gainXp(interactionXp));
+    }
+    if(nearbyVagabonds.length){
+      nearbyVagabonds.forEach(v=>v.gainXp(interactionXp));
+    }
+    if(nearbySoldiers.length || nearbyVagabonds.length){
+      this.logEvent(`${town.name} organise un entraînement rapide : soldats/vagabonds gagnent ${interactionXp} XP.`);
     }
 
     // Petit bonus MP
