@@ -44,8 +44,6 @@ const MAX_LEVEL = 50;
 
 // Temps : 20 secondes IRL = 1 an en jeu
 const YEAR_DURATION = 20.0;      // 20s -> 1 an
-const AGING_PERIOD_YEARS = 50;   // tous les 50 ans
-const AGING_LEVEL_LOSS = 5;      // perte de 5 niveaux par vieillesse
 
 const MONSTER_LIMIT = 600; // limite globale de démons vivants
 
@@ -191,6 +189,11 @@ const XP_SCROLL_BASE_COST = 140;
 const XP_SCROLL_COST_PER_GRADE = 90;
 const XP_SCROLL_BASE_XP = 40;
 const XP_SCROLL_XP_PER_GRADE = 28;
+
+// Ressources
+const RESOURCE_SPAWN_INTERVAL = 16.0;
+const RESOURCE_LIMIT = 90;
+const RESOURCE_BATCH = 4;
 
 // Événements de vie des villes
 const TOWN_LIFE_EVENT_INTERVAL = 55.0;
@@ -612,6 +615,7 @@ class Hero {
     this.backpack = [];
     this.potionsCount = 0;
     this.gold = 0;
+    this.resources = {wood:0, stone:0};
 
     this.maxMp = 20;
     this.mp = this.maxMp;
@@ -1032,6 +1036,34 @@ class Hero {
       return;
     }
 
+    // Ressources à collecter
+    let resourceFilter = null;
+    if(game.currentQuest && game.currentQuest.type==="gatherResource"){
+      resourceFilter = game.currentQuest.resource;
+    }
+    let bestRes = null, bestResDist = Infinity;
+    for(const r of game.resources){
+      if(resourceFilter && r.type!==resourceFilter) continue;
+      const d = dist(hero.x,hero.y,r.x,r.y);
+      if(d < HERO_LOOT_RADIUS && d < bestResDist){
+        bestResDist = d;
+        bestRes = r;
+      }
+    }
+    if(!bestRes && !resourceFilter){
+      for(const r of game.resources){
+        const d = dist(hero.x,hero.y,r.x,r.y);
+        if(d < HERO_LOOT_RADIUS*0.75 && d < bestResDist){
+          bestResDist = d;
+          bestRes = r;
+        }
+      }
+    }
+    if(bestRes){
+      this.target = {type:"resource",obj:bestRes};
+      return;
+    }
+
     const nearTown = game.currentTown &&
                      dist(hero.x,hero.y,game.currentTown.x,game.currentTown.y) < 80;
 
@@ -1424,6 +1456,7 @@ class Game {
     // Fragments instables & fragments stables pour les mutations
     this.preFragments = [];
     this.stableFragments = [];
+    this.resources = [];
     // Commerce
     this.caravans = [];
     this.caravanTimer = 0;
@@ -1470,6 +1503,7 @@ class Game {
     this.neutrals = [];
     this.shops = [];
     this.chests = [];
+    this.resourceSpawnTimer = 0;
     this.neutralSpawnTimer = 0;
     this.shopSpawnTimer = 0;
     this.chestSpawnTimer = 0;
@@ -1494,7 +1528,6 @@ class Game {
     // Temps du monde (années) : 20s = 1 an
     this.worldTime = 0;      // temps total en secondes
     this.worldYears = 0;     // années écoulées
-    this.nextAgingYear = 50; // première vieillesse à 50 ans
 
     this.createPois();
     this.buildTileMap();
@@ -1537,6 +1570,8 @@ class Game {
         level:lvl,
         x,y,
         gold:700,
+        wood:0,
+        stone:0,
         storedPotions:0,
         maxHp:0,
         hp:0,
@@ -2095,72 +2130,6 @@ class Game {
     }
   }
 
-  applyAging(){
-    // Vieillesse : tous les AGING_PERIOD_YEARS, les personnages héros perdent AGING_LEVEL_LOSS niveaux
-    const year = this.worldYears || 0;
-    this.logEvent(`La vieillesse frappe le monde à l'année ${year}. Les héros perdent ${AGING_LEVEL_LOSS} niveaux.`);
-
-    // Héros principal
-    const hero = this.hero;
-    if(hero && hero.level){
-      const old = hero.level;
-      hero.level = Math.max(1, hero.level - AGING_LEVEL_LOSS);
-      hero.xp = 0;
-      if(hero.xpToNext){
-        hero.xpToNext = Math.max(10, Math.floor(hero.xpToNext*0.8));
-      }
-      this.logEvent(`${hero.name} passe de Niv ${old} à Niv ${hero.level} à cause de la vieillesse.`);
-    }
-
-    // Héros de village
-    if(this.villageHeroes){
-      for(const vh of this.villageHeroes){
-        if(!vh || vh.dead) continue;
-        if(vh.level){
-          const old = vh.level;
-          vh.level = Math.max(1, vh.level - AGING_LEVEL_LOSS);
-          vh.xp = 0;
-          if(vh.xpToNext){
-            vh.xpToNext = Math.max(8, Math.floor(vh.xpToNext*0.85));
-          }
-          this.logEvent(`${vh.name} vieillit : Niv ${old} -> ${vh.level}.`);
-        }
-      }
-    }
-
-    // Soldats d'alliance (ceux encore vivants)
-    if(this.soldiers){
-      for(const s of this.soldiers){
-        if(!s || s.dead) continue;
-        if(s.level){
-          const old = s.level;
-          s.level = Math.max(1, s.level - AGING_LEVEL_LOSS);
-          s.xp = 0;
-          if(s.xpToNext){
-            s.xpToNext = Math.max(8, Math.floor(s.xpToNext*0.85));
-          }
-        }
-      }
-    }
-
-    // Vagabonds : même traitement que les autres héros
-    if(this.vagabonds){
-      for(const v of this.vagabonds){
-        if(!v || v.dead) continue;
-        if(v.level){
-          const old = v.level;
-          v.level = Math.max(1, v.level - AGING_LEVEL_LOSS);
-          v.xp = 0;
-          if(v.xpToNext){
-            v.xpToNext = Math.max(8, Math.floor(v.xpToNext*0.85));
-          }
-          this.logEvent(`Le vagabond ${v.name} vieillit : Niv ${old} -> ${v.level}.`);
-        }
-      }
-    }
-  }
-
-
   heroDamageDemonTown(dt){
     const hero = this.hero;
     if(!hero || !this.currentQuest) return;
@@ -2513,6 +2482,52 @@ updateAllianceWars(dt){
       }
     }
     return mult;
+  }
+
+  findClosestHumanTown(x,y){
+    const towns = this.towns && this.towns.length ? this.towns : this.pois.filter(p=>p.type==="town");
+    let best=null,bestD=Infinity;
+    for(const t of towns){
+      if(t.isDemonTown) continue;
+      const d = dist(x,y,t.x,t.y);
+      if(d<bestD){ bestD=d; best=t; }
+    }
+    return best;
+  }
+
+  findNearestResource(x,y,maxDist,typeFilter=null){
+    let best=null,bestD=maxDist||Infinity;
+    for(const r of this.resources){
+      if(typeFilter && r.type!==typeFilter) continue;
+      const d = dist(x,y,r.x,r.y);
+      if(d<bestD){ bestD=d; best=r; }
+    }
+    return best;
+  }
+
+  spawnResource(type){
+    let tries=0;
+    while(tries<40){
+      tries++;
+      const x = randInt(60, WORLD_WIDTH-60);
+      const y = randInt(60, WORLD_HEIGHT-60);
+      const tile = this.getTileAt(x,y);
+      if(tile===TILE.WATER || tile===TILE.DEMON_CITY) continue;
+      if(type==="wood" && tile!==TILE.FOREST && tile!==TILE.PLAINS) continue;
+      if(type==="stone" && tile!==TILE.PLAINS && tile!==TILE.MOUNTAIN) continue;
+      this.resources.push({type,x,y});
+      return true;
+    }
+    return false;
+  }
+
+  spawnResourceBatch(){
+    if(this.resources.length >= RESOURCE_LIMIT) return;
+    const toSpawn = Math.min(RESOURCE_BATCH, RESOURCE_LIMIT - this.resources.length);
+    for(let i=0;i<toSpawn;i++){
+      const type = Math.random()<0.55 ? "wood" : "stone";
+      this.spawnResource(type);
+    }
   }
 
   // ---------- HÉROS DE VILLE ----------
@@ -2905,12 +2920,6 @@ spawnNeutral(){
     const yearsBefore = this.worldYears;
     this.worldYears = Math.floor(this.worldTime / YEAR_DURATION);
 
-    // Vieillesse : tous les 50 ans, les héros perdent des niveaux
-    if(this.worldYears >= this.nextAgingYear){
-      this.applyAging();
-      this.nextAgingYear += AGING_PERIOD_YEARS;
-    }
-
     // Spawn démons par nid (forêt/zone)
     for(const nest of this.demonNests){
       nest.spawnTimer += dt;
@@ -3023,6 +3032,13 @@ spawnNeutral(){
       if(Math.random()<CHEST_SPAWN_CHANCE){
         this.spawnChest();
       }
+    }
+
+    // Ressources naturelles
+    this.resourceSpawnTimer += dt;
+    if(this.resourceSpawnTimer>=RESOURCE_SPAWN_INTERVAL){
+      this.resourceSpawnTimer = 0;
+      this.spawnResourceBatch();
     }
 
     // Portails dynamiques (toutes les 5 min)
@@ -3780,50 +3796,64 @@ spawnNeutral(){
         }
 
       } else {
-        // Pas de combat prioritaire -> comportement d'exploration / missions pour alliances
-
-        // Choix d'une cible (ville ou forêt) si pas déjà de destination
-        if(!v.target || Math.random()<0.002){
-          const choices = this.pois.filter(p=>p.type==="town" || p.type==="forest");
-          if(choices.length>0){
-            v.target = randChoice(choices);
-          } else {
-            v.target = null;
-          }
-        }
-
-        if(v.target){
-          const tx = v.target.x;
-          const ty = v.target.y;
-          const dx = tx - v.x;
-          const dy = ty - v.y;
+        // Pas de combat prioritaire -> récolte ou missions
+        const nearRes = this.findNearestResource(v.x,v.y,140);
+        if(nearRes){
+          const dx = nearRes.x - v.x;
+          const dy = nearRes.y - v.y;
           const d = Math.hypot(dx,dy)||1;
           const dirx = dx/d, diry = dy/d;
-
-          if(d>18){
-            let step = v.speed*dt;
+          if(d>8){
+            let step = v.speed*dt*0.9;
             step *= this.getMoveMultiplierAt(v.x,v.y);
             if(step>d) step=d;
             v.x += dirx*step;
             v.y += diry*step;
-          } else {
-            // Arrivé près d'une ville : possibilité de "faire une quête" pour son alliance
-            if(v.target.type==="town" && v.target.allianceId!=null){
-              const aid = v.target.allianceId;
-              if(!v.questsByAlliance) v.questsByAlliance={};
-              if(Math.random()<0.25){
-                v.questsByAlliance[aid] = (v.questsByAlliance[aid]||0) + 1;
-                const qCount = v.questsByAlliance[aid];
-                this.logEvent(`${v.name} accomplit une mission pour l'alliance de ${v.target.name} (total ${qCount}).`);
-                // S'il dépasse 3 quêtes pour cette alliance, il la rejoint
-                if(qCount>=3 && !v.allianceId){
-                  v.allianceId = aid;
-                  v.state = "adventurer"; // aventurier lié à une alliance
-                  this.logEvent(`${v.name} rejoint l'alliance de ${v.target.name} après de nombreuses quêtes.`);
+          }
+        } else {
+          // Choix d'une cible (ville ou forêt) si pas déjà de destination
+          if(!v.target || Math.random()<0.002){
+            const choices = this.pois.filter(p=>p.type==="town" || p.type==="forest");
+            if(choices.length>0){
+              v.target = randChoice(choices);
+            } else {
+              v.target = null;
+            }
+          }
+
+          if(v.target){
+            const tx = v.target.x;
+            const ty = v.target.y;
+            const dx = tx - v.x;
+            const dy = ty - v.y;
+            const d = Math.hypot(dx,dy)||1;
+            const dirx = dx/d, diry = dy/d;
+
+            if(d>18){
+              let step = v.speed*dt;
+              step *= this.getMoveMultiplierAt(v.x,v.y);
+              if(step>d) step=d;
+              v.x += dirx*step;
+              v.y += diry*step;
+            } else {
+              // Arrivé près d'une ville : possibilité de "faire une quête" pour son alliance
+              if(v.target.type==="town" && v.target.allianceId!=null){
+                const aid = v.target.allianceId;
+                if(!v.questsByAlliance) v.questsByAlliance={};
+                if(Math.random()<0.25){
+                  v.questsByAlliance[aid] = (v.questsByAlliance[aid]||0) + 1;
+                  const qCount = v.questsByAlliance[aid];
+                  this.logEvent(`${v.name} accomplit une mission pour l'alliance de ${v.target.name} (total ${qCount}).`);
+                  // S'il dépasse 3 quêtes pour cette alliance, il la rejoint
+                  if(qCount>=3 && !v.allianceId){
+                    v.allianceId = aid;
+                    v.state = "adventurer"; // aventurier lié à une alliance
+                    this.logEvent(`${v.name} rejoint l'alliance de ${v.target.name} après de nombreuses quêtes.`);
+                  }
                 }
               }
+              v.target = null;
             }
-            v.target = null;
           }
         }
       }
@@ -4007,23 +4037,36 @@ updateVillageHeroes(dt){
         }
 
       } else {
-        // Patrouille autour de la ville d'origine
-        if(!vh.patrolTarget || dist(vh.x,vh.y,vh.patrolTarget.x,vh.patrolTarget.y)<10){
-          const ang=Math.random()*Math.PI*2;
-          const rad=60+Math.random()*160;
-          vh.patrolTarget={
-            x: vh.town.x + Math.cos(ang)*rad,
-            y: vh.town.y + Math.sin(ang)*rad
-          };
+        const res = this.findNearestResource(vh.x,vh.y,140);
+        if(res){
+          const dx = res.x - vh.x;
+          const dy = res.y - vh.y;
+          const d = Math.hypot(dx,dy)||1;
+          const dirx = dx/d, diry = dy/d;
+          let step = vh.speed*dt*0.7;
+          step *= this.getMoveMultiplierAt(vh.x,vh.y);
+          if(step>d) step=d;
+          vh.x += dirx*step;
+          vh.y += diry*step;
+        } else {
+          // Patrouille autour de la ville d'origine
+          if(!vh.patrolTarget || dist(vh.x,vh.y,vh.patrolTarget.x,vh.patrolTarget.y)<10){
+            const ang=Math.random()*Math.PI*2;
+            const rad=60+Math.random()*160;
+            vh.patrolTarget={
+              x: vh.town.x + Math.cos(ang)*rad,
+              y: vh.town.y + Math.sin(ang)*rad
+            };
+          }
+          const tx=vh.patrolTarget.x, ty=vh.patrolTarget.y;
+          const dx=tx-vh.x, dy=ty-vh.y;
+          const d=Math.hypot(dx,dy)||1;
+          const dirx=dx/d, diry=dy/d;
+          let step=vh.speed*dt*0.7;
+          step *= this.getMoveMultiplierAt(vh.x,vh.y);
+          if(step>d) step=d;
+          vh.x+=dirx*step; vh.y+=diry*step;
         }
-        const tx=vh.patrolTarget.x, ty=vh.patrolTarget.y;
-        const dx=tx-vh.x, dy=ty-vh.y;
-        const d=Math.hypot(dx,dy)||1;
-        const dirx=dx/d, diry=dy/d;
-        let step=vh.speed*dt*0.7;
-        step *= this.getMoveMultiplierAt(vh.x,vh.y);
-        if(step>d) step=d;
-        vh.x+=dirx*step; vh.y+=diry*step;
       }
 
       if(vh.hp<=0){
@@ -4247,91 +4290,104 @@ updateVillageHeroes(dt){
 
         } else {
           // Patrouille / expédition
-          // Les soldats peuvent parfois partir en expédition pour rapporter de l'or à leur ville
-          if(s.state === "defense" && !this.coalitionActive && !siegeTown && !bestMonster && !bestEnemyUnit){
-            if(!s.expeditionTarget && Math.random()<0.002){
-              const areas = this.pois.filter(p=>p.type==="forest" || p.type==="zone");
-              if(areas.length>0){
-                s.expeditionTarget = randChoice(areas);
-                s.state = "expedition";
-                this.logEvent(`${s.town.name} envoie un soldat en expédition vers une ${s.expeditionTarget.type==="forest"?"forêt":"zone"}.`);
-              }
-            }
-          }
-
-          if(s.state === "expedition" && s.expeditionTarget){
-            const tx = s.expeditionTarget.x;
-            const ty = s.expeditionTarget.y;
-            const dx = tx - s.x;
-            const dy = ty - s.y;
+          const res = this.findNearestResource(s.x,s.y,130);
+          if(res){
+            const dx = res.x - s.x;
+            const dy = res.y - s.y;
             const d = Math.hypot(dx,dy)||1;
             const dirx = dx/d, diry = dy/d;
-
-            if(d>24){
-              let step = s.speed*dt*0.8;
-              step *= this.getMoveMultiplierAt(s.x,s.y);
-              if(step>d) step=d;
-              s.x += dirx*step;
-              s.y += diry*step;
-            }else{
-              // Sur place : le soldat "farme" de l'or
-              if(s.gold == null) s.gold = 0;
-              s.gold += 10*dt; // ~5s pour atteindre 50 or
-              if(s.gold >= 50){
-                s.state = "return";
-                this.logEvent(`Un soldat de ${s.town.name} termine son expédition et rentre avec ${Math.floor(s.gold)} or.`);
-              }
-            }
-
-          } else if(s.state === "return"){
-            const tx = s.town.x;
-            const ty = s.town.y;
-            const dx = tx - s.x;
-            const dy = ty - s.y;
-            const d = Math.hypot(dx,dy)||1;
-            const dirx = dx/d, diry = dy/d;
-
-            if(d>28){
-              let step = s.speed*dt*0.9;
-              step *= this.getMoveMultiplierAt(s.x,s.y);
-              if(step>d) step=d;
-              s.x += dirx*step;
-              s.y += diry*step;
-            }else{
-              // Dépôt de l'or à la ville
-              const gain = Math.floor(s.gold||0);
-              if(gain>0){
-                s.town.gold = (s.town.gold||0) + gain;
-                this.logEvent(`Un soldat rapporte ${gain} or à ${s.town.name} après son expédition.`);
-              }
-              s.gold = 0;
-              s.state = "defense";
-              s.expeditionTarget = null;
-            }
-
-          } else {
-            // Patrouille autour de la ville
-            if(!s.patrolTarget || dist(s.x,s.y,s.patrolTarget.x,s.patrolTarget.y)<10){
-              const ang = Math.random()*Math.PI*2;
-              const rad = 40+Math.random()*120;
-              s.patrolTarget = {
-                x: s.town.x + Math.cos(ang)*rad,
-                y: s.town.y + Math.sin(ang)*rad
-              };
-            }
-
-            const tx = s.patrolTarget.x;
-            const ty = s.patrolTarget.y;
-            const dx = tx - s.x;
-            const dy = ty - s.y;
-            const d = Math.hypot(dx,dy)||1;
-            const dirx = dx/d, diry = dy/d;
-
-            let step = s.speed*dt*0.7;
+            let step = s.speed*dt*0.8;
             step *= this.getMoveMultiplierAt(s.x,s.y);
             if(step>d) step=d;
             s.x += dirx*step;
             s.y += diry*step;
+          } else {
+            // Les soldats peuvent parfois partir en expédition pour rapporter de l'or à leur ville
+            if(s.state === "defense" && !this.coalitionActive && !siegeTown && !bestMonster && !bestEnemyUnit){
+              if(!s.expeditionTarget && Math.random()<0.002){
+                const areas = this.pois.filter(p=>p.type==="forest" || p.type==="zone");
+                if(areas.length>0){
+                  s.expeditionTarget = randChoice(areas);
+                  s.state = "expedition";
+                  this.logEvent(`${s.town.name} envoie un soldat en expédition vers une ${s.expeditionTarget.type==="forest"?"forêt":"zone"}.`);
+                }
+              }
+            }
+
+            if(s.state === "expedition" && s.expeditionTarget){
+              const tx = s.expeditionTarget.x;
+              const ty = s.expeditionTarget.y;
+              const dx = tx - s.x;
+              const dy = ty - s.y;
+              const d = Math.hypot(dx,dy)||1;
+              const dirx = dx/d, diry = dy/d;
+
+              if(d>24){
+                let step = s.speed*dt*0.8;
+                step *= this.getMoveMultiplierAt(s.x,s.y);
+                if(step>d) step=d;
+                s.x += dirx*step;
+                s.y += diry*step;
+              }else{
+                // Sur place : le soldat "farme" de l'or
+                if(s.gold == null) s.gold = 0;
+                s.gold += 10*dt; // ~5s pour atteindre 50 or
+                if(s.gold >= 50){
+                  s.state = "return";
+                  this.logEvent(`Un soldat de ${s.town.name} termine son expédition et rentre avec ${Math.floor(s.gold)} or.`);
+                }
+              }
+
+            } else if(s.state === "return"){
+              const tx = s.town.x;
+              const ty = s.town.y;
+              const dx = tx - s.x;
+              const dy = ty - s.y;
+              const d = Math.hypot(dx,dy)||1;
+              const dirx = dx/d, diry = dy/d;
+
+              if(d>28){
+                let step = s.speed*dt*0.9;
+                step *= this.getMoveMultiplierAt(s.x,s.y);
+                if(step>d) step=d;
+                s.x += dirx*step;
+                s.y += diry*step;
+              }else{
+                // Dépôt de l'or à la ville
+                const gain = Math.floor(s.gold||0);
+                if(gain>0){
+                  s.town.gold = (s.town.gold||0) + gain;
+                  this.logEvent(`Un soldat rapporte ${gain} or à ${s.town.name} après son expédition.`);
+                }
+                s.gold = 0;
+                s.state = "defense";
+                s.expeditionTarget = null;
+              }
+
+            } else {
+              // Patrouille autour de la ville
+              if(!s.patrolTarget || dist(s.x,s.y,s.patrolTarget.x,s.patrolTarget.y)<10){
+                const ang = Math.random()*Math.PI*2;
+                const rad = 40+Math.random()*120;
+                s.patrolTarget = {
+                  x: s.town.x + Math.cos(ang)*rad,
+                  y: s.town.y + Math.sin(ang)*rad
+                };
+              }
+
+              const tx = s.patrolTarget.x;
+              const ty = s.patrolTarget.y;
+              const dx = tx - s.x;
+              const dy = ty - s.y;
+              const d = Math.hypot(dx,dy)||1;
+              const dirx = dx/d, diry = dy/d;
+
+              let step = s.speed*dt*0.7;
+              step *= this.getMoveMultiplierAt(s.x,s.y);
+              if(step>d) step=d;
+              s.x += dirx*step;
+              s.y += diry*step;
+            }
           }
         }
       }
@@ -4765,6 +4821,25 @@ updateVillageHeroes(dt){
       return;
     }
 
+    // Quête de collecte de ressources pour la ville courante
+    if(hero.level<20 && Math.random()<0.35){
+      const resType = Math.random()<0.5 ? "wood" : "stone";
+      const amount = randInt(4,8) + Math.floor(hero.level/3);
+      const reward = randInt(QUEST_REWARD_MIN,QUEST_REWARD_MAX) + hero.level*6;
+      this.currentQuest = {
+        type:"gatherResource",
+        resource:resType,
+        targetCount:amount,
+        delivered:0,
+        area:town,
+        reward
+      };
+      this.questProgress = 0;
+      const label = resType==="wood" ? "bois" : "pierre";
+      this.logEvent(`Quête : livrer ${amount} ${label} à ${town.name}.`);
+      return;
+    }
+
     // Quête d'alliance : livrer des provisions à une ville alliée
     if(this.alliances && town.allianceId!=null && hero.level>=3 && hero.level<20){
       const alliance = this.alliances.find(a=>a.id===town.allianceId);
@@ -4909,6 +4984,31 @@ updateVillageHeroes(dt){
         this.questProgress = 0;
       }
     }
+    // Quête de ressources : dépôt en ville
+    if(q.type==="gatherResource" && q.area === town){
+      const resType = q.resource || "wood";
+      const current = q.delivered || 0;
+      const need = Math.max(0, (q.targetCount||0) - current);
+      const available = this.hero.resources ? (this.hero.resources[resType]||0) : 0;
+      if(available>0 && need>0){
+        const delivered = Math.min(available, need);
+        this.hero.resources[resType] -= delivered;
+        town[resType] = (town[resType]||0) + delivered;
+        q.delivered = current + delivered;
+        this.questProgress = q.delivered;
+      }
+
+      if((q.delivered||0) >= (q.targetCount||0)){
+        const reward = q.reward || 0;
+        this.hero.gold += reward;
+        const xpGain = 6 + this.hero.level*2;
+        this.hero.gainXp(xpGain);
+        const label = resType==="wood" ? "bois" : "pierre";
+        this.logEvent(`Quête accomplie : ressources livrées (${label}) à ${town.name} (+${reward} or, +${xpGain} XP).`);
+        this.currentQuest = null;
+        this.questProgress = 0;
+      }
+    }
     // Les autres types de quêtes se terminent via d'autres méthodes
   }
 
@@ -5040,6 +5140,58 @@ updateVillageHeroes(dt){
         if(!taken) remainingShards.push(shard);
       }
       this.manaShards = remainingShards;
+    }
+
+    // Ressources (bois / pierre)
+    if(this.resources){
+      const remainingRes = [];
+      for(const res of this.resources){
+        let taken=false;
+
+        if(dist(hero.x,hero.y,res.x,res.y) < 15){
+          hero.resources[res.type] = (hero.resources[res.type]||0) + 1;
+          taken = true;
+        } else {
+          for(const vh of this.villageHeroes){
+            if(vh.dead || !vh.town) continue;
+            if(dist(vh.x,vh.y,res.x,res.y) < 18){
+              vh.town[res.type] = (vh.town[res.type]||0) + 1;
+              taken = true;
+              break;
+            }
+          }
+
+          // Vagabonds : ramènent au village le plus proche
+          if(!taken && this.vagabonds){
+            for(const v of this.vagabonds){
+              if(!v || v.dead) continue;
+              if(dist(v.x,v.y,res.x,res.y) < 16){
+                const town = this.findClosestHumanTown(v.x,v.y);
+                if(town){
+                  town[res.type] = (town[res.type]||0) + 1;
+                }
+                taken = true;
+                break;
+              }
+            }
+          }
+
+          // Soldats : rapportent à leur ville
+          if(!taken){
+            for(const s of this.soldiers){
+              if(!s || s.dead || !s.town) continue;
+              if(dist(s.x,s.y,res.x,res.y) < 16){
+                s.town[res.type] = (s.town[res.type]||0) + 1;
+                taken = true;
+                break;
+              }
+            }
+          }
+        }
+
+        if(!taken) remainingRes.push(res);
+      }
+      this.resources = remainingRes;
     }
 
     // PRÉ-FRAGMENTS INSTABLES (mutables en bêtes magiques)
@@ -5196,6 +5348,17 @@ updateVillageHeroes(dt){
       town.gold = (town.gold||0) + townBonus;
       hero.gold += heroBonus;
       this.logEvent(`${hero.name} confie ${donated} fragment(s) à ${town.name} pour alimenter le commerce (+${heroBonus} or héros, +${townBonus} or ville).`);
+    }
+
+    // Dépôt des ressources brutes
+    const deliveredWood = hero.resources?.wood || 0;
+    const deliveredStone = hero.resources?.stone || 0;
+    if(deliveredWood>0 || deliveredStone>0){
+      town.wood = (town.wood||0) + deliveredWood;
+      town.stone = (town.stone||0) + deliveredStone;
+      hero.resources.wood = 0;
+      hero.resources.stone = 0;
+      this.logEvent(`${hero.name} dépose des ressources à ${town.name} (+${deliveredWood} bois, +${deliveredStone} pierre).`);
     }
 
     // Soins & achats en ville
@@ -5626,6 +5789,7 @@ updateVillageHeroes(dt){
     this.drawBackground(camX,camY);
     this.drawBridges(camX,camY);
     for(const p of this.pois) this.drawPoi(p,camX,camY);
+    for(const r of this.resources) this.drawResource(r,camX,camY);
     for(const g of this.goldItems) this.drawGold(g,camX,camY);
     for(const p of this.potions) this.drawPotion(p,camX,camY);
     if(this.manaShards){
@@ -5939,6 +6103,34 @@ drawBackground(camX,camY){
     ctx.fillRect(s.x-2,s.y-r-4,4,4);
     ctx.strokeStyle="#b0b0b0";
     ctx.strokeRect(s.x-2,s.y-r-4,4,4);
+  }
+
+  drawResource(res,camX,camY){
+    const ctx=this.ctx;
+    const s=this.worldToScreen(res.x,res.y,camX,camY);
+    ctx.save();
+    if(res.type==="wood"){
+      ctx.fillStyle="#6d4c41";
+      ctx.fillRect(s.x-4,s.y-2,8,6);
+      ctx.fillStyle="#2e7d32";
+      ctx.beginPath();
+      ctx.moveTo(s.x,s.y-10);
+      ctx.lineTo(s.x-8,s.y-2);
+      ctx.lineTo(s.x+8,s.y-2);
+      ctx.closePath();
+      ctx.fill();
+    } else {
+      ctx.fillStyle="#b0bec5";
+      ctx.beginPath();
+      ctx.moveTo(s.x-6,s.y+4);
+      ctx.lineTo(s.x,s.y-8);
+      ctx.lineTo(s.x+6,s.y+4);
+      ctx.closePath();
+      ctx.fill();
+      ctx.strokeStyle="#546e7a";
+      ctx.stroke();
+    }
+    ctx.restore();
   }
 
 
@@ -6563,9 +6755,11 @@ drawBackground(camX,camY){
     const fragCount = hero.fragmentStableCount || 0;
     const fragLabel = hero.fragmentUltimateUnlocked ? "Mutation : Ultime prêt" : (`Mutation : ${fragCount}/10`);
     ctx.fillText(`Or : ${hero.gold}   Potions : ${hero.potionsCount}   Sac : ${hero.backpack.length}   Fragments : ${fragLabel}`,mx,info2Y);
+    const resText = `Bois : ${hero.resources?.wood||0}   Pierre : ${hero.resources?.stone||0}`;
+    ctx.fillText(resText,mx,info2Y+14);
 
     const biome=this.getBiome(hero.x,hero.y);
-    let biomeY=info2Y+14;
+    let biomeY=info2Y+28;
     ctx.fillStyle="#a5d6a7"; ctx.font="9px Helvetica";
     ctx.fillText(`Biome : ${biome.charAt(0).toUpperCase()+biome.slice(1)}`,mx,biomeY);
 
@@ -6717,6 +6911,13 @@ drawBackground(camX,camY){
         ctx.fillText("Quête : Livrer des provisions",panelX+8,qY+14);
         ctx.fillStyle="#dddddd"; ctx.font="9px Helvetica";
         ctx.fillText(`De ${fromName} vers ${toName}`,panelX+8,qY+28);
+        ctx.fillText(`Récompense : ${q.reward} or`,panelX+8,qY+40);
+      } else if(q.type==="gatherResource"){
+        const label = q.resource==="wood" ? "bois" : "pierre";
+        const delivered = q.delivered||0;
+        ctx.fillText(`Quête : Livrer ${q.targetCount} ${label}`,panelX+8,qY+14);
+        ctx.fillStyle="#dddddd"; ctx.font="9px Helvetica";
+        ctx.fillText(`Progression : ${delivered}/${q.targetCount}`,panelX+8,qY+28);
         ctx.fillText(`Récompense : ${q.reward} or`,panelX+8,qY+40);
       } else {
         const areaName = q.area ? (q.area.type==="zone" ? "Portail" : "Forêt") : "Zone";
