@@ -6595,14 +6595,34 @@ drawBackground(camX,camY){
 
 // ===================== LANCEMENT =====================
 
-const canvas = document.getElementById("game");
-const game = new Game(canvas);
+function startGame(){
+  const canvas = document.getElementById("game");
+  if(!canvas){
+    console.error("Canvas introuvable, impossible de lancer le jeu.");
+    return;
+  }
 
-function loop(){
-  game.step();
+  const ctx = canvas.getContext("2d");
+  if(!ctx){
+    console.error("Contexte 2D indisponible, le navigateur ne supporte pas le canvas.");
+    return;
+  }
+
+  const game = new Game(canvas);
+
+  function loop(){
+    game.step();
+    requestAnimationFrame(loop);
+  }
+
   requestAnimationFrame(loop);
 }
-requestAnimationFrame(loop);
+
+if(document.readyState === "loading"){
+  document.addEventListener("DOMContentLoaded", startGame);
+} else {
+  startGame();
+}
 
 </script>
 </body>
