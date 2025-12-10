@@ -182,11 +182,6 @@ const XP_SCROLL_COST_PER_GRADE = 90;
 const XP_SCROLL_BASE_XP = 40;
 const XP_SCROLL_XP_PER_GRADE = 28;
 
-// Ressources
-const RESOURCE_SPAWN_INTERVAL = 16.0;
-const RESOURCE_LIMIT = 90;
-const RESOURCE_BATCH = 4;
-
 // Événements de vie des villes
 const TOWN_LIFE_EVENT_INTERVAL = 55.0;
 
@@ -439,9 +434,6 @@ const PASSIVE_DEFS = [
   { id:"featherStep", name:"Pas léger",
     desc:"Vitesse ++ mais défense --.",
     speedMult:1.3, defenseBonus:-1 },
-  { id:"stoneHeart", name:"Cœur de pierre",
-    desc:"Défense +4 mais dégâts -10%.",
-    defenseBonus:4, attackMult:0.9 },
   { id:"blazeSoul", name:"Âme flamboyante",
     desc:"Les AOE infligent +30% de dégâts.",
     aoeDamageBonus:0.3 },
@@ -607,7 +599,6 @@ class Hero {
     this.backpack = [];
     this.potionsCount = 0;
     this.gold = 0;
-    this.resources = {wood:0, stone:0};
 
     this.maxMp = 20;
     this.mp = this.maxMp;
@@ -1028,34 +1019,6 @@ class Hero {
       return;
     }
 
-    // Ressources à collecter
-    let resourceFilter = null;
-    if(game.currentQuest && game.currentQuest.type==="gatherResource"){
-      resourceFilter = game.currentQuest.resource;
-    }
-    let bestRes = null, bestResDist = Infinity;
-    for(const r of game.resources){
-      if(resourceFilter && r.type!==resourceFilter) continue;
-      const d = dist(hero.x,hero.y,r.x,r.y);
-      if(d < HERO_LOOT_RADIUS && d < bestResDist){
-        bestResDist = d;
-        bestRes = r;
-      }
-    }
-    if(!bestRes && !resourceFilter){
-      for(const r of game.resources){
-        const d = dist(hero.x,hero.y,r.x,r.y);
-        if(d < HERO_LOOT_RADIUS*0.75 && d < bestResDist){
-          bestResDist = d;
-          bestRes = r;
-        }
-      }
-    }
-    if(bestRes){
-      this.target = {type:"resource",obj:bestRes};
-      return;
-    }
-
     const nearTown = game.currentTown &&
                      dist(hero.x,hero.y,game.currentTown.x,game.currentTown.y) < 80;
 
@@ -1448,7 +1411,6 @@ class Game {
     // Fragments instables & fragments stables pour les mutations
     this.preFragments = [];
     this.stableFragments = [];
-    this.resources = [];
     // Commerce
     this.caravans = [];
     this.caravanTimer = 0;
@@ -1495,7 +1457,6 @@ class Game {
     this.neutrals = [];
     this.shops = [];
     this.chests = [];
-    this.resourceSpawnTimer = 0;
     this.neutralSpawnTimer = 0;
     this.shopSpawnTimer = 0;
     this.chestSpawnTimer = 0;
@@ -1560,8 +1521,6 @@ class Game {
         level:lvl,
         x,y,
         gold:700,
-        wood:0,
-        stone:0,
         storedPotions:0,
         maxHp:0,
         hp:0,
@@ -2311,41 +2270,6 @@ updateAllianceWars(dt){
     return best;
   }
 
-  findNearestResource(x,y,maxDist,typeFilter=null){
-    let best=null,bestD=maxDist||Infinity;
-    for(const r of this.resources){
-      if(typeFilter && r.type!==typeFilter) continue;
-      const d = dist(x,y,r.x,r.y);
-      if(d<bestD){ bestD=d; best=r; }
-    }
-    return best;
-  }
-
-  spawnResource(type){
-    let tries=0;
-    while(tries<40){
-      tries++;
-      const x = randInt(60, WORLD_WIDTH-60);
-      const y = randInt(60, WORLD_HEIGHT-60);
-      const tile = this.getTileAt(x,y);
-      if(tile===TILE.WATER || tile===TILE.DEMON_CITY) continue;
-      if(type==="wood" && tile!==TILE.FOREST && tile!==TILE.PLAINS) continue;
-      if(type==="stone" && tile!==TILE.PLAINS && tile!==TILE.MOUNTAIN) continue;
-      this.resources.push({type,x,y});
-      return true;
-    }
-    return false;
-  }
-
-  spawnResourceBatch(){
-    if(this.resources.length >= RESOURCE_LIMIT) return;
-    const toSpawn = Math.min(RESOURCE_BATCH, RESOURCE_LIMIT - this.resources.length);
-    for(let i=0;i<toSpawn;i++){
-      const type = Math.random()<0.55 ? "wood" : "stone";
-      this.spawnResource(type);
-    }
-  }
-
   // ---------- HÉROS DE VILLE ----------
 
   spawnVillageHeroes(){
@@ -2848,13 +2772,6 @@ spawnNeutral(){
       if(Math.random()<CHEST_SPAWN_CHANCE){
         this.spawnChest();
       }
-    }
-
-    // Ressources naturelles
-    this.resourceSpawnTimer += dt;
-    if(this.resourceSpawnTimer>=RESOURCE_SPAWN_INTERVAL){
-      this.resourceSpawnTimer = 0;
-      this.spawnResourceBatch();
     }
 
     // Portails dynamiques (toutes les 5 min)
@@ -4637,25 +4554,6 @@ updateVillageHeroes(dt){
       return;
     }
 
-    // Quête de collecte de ressources pour la ville courante
-    if(hero.level<20 && Math.random()<0.35){
-      const resType = Math.random()<0.5 ? "wood" : "stone";
-      const amount = randInt(4,8) + Math.floor(hero.level/3);
-      const reward = randInt(QUEST_REWARD_MIN,QUEST_REWARD_MAX) + hero.level*6;
-      this.currentQuest = {
-        type:"gatherResource",
-        resource:resType,
-        targetCount:amount,
-        delivered:0,
-        area:town,
-        reward
-      };
-      this.questProgress = 0;
-      const label = resType==="wood" ? "bois" : "pierre";
-      this.logEvent(`Quête : livrer ${amount} ${label} à ${town.name}.`);
-      return;
-    }
-
     // Quête d'alliance : livrer des provisions à une ville alliée
     if(this.alliances && town.allianceId!=null && hero.level>=3 && hero.level<20){
       const alliance = this.alliances.find(a=>a.id===town.allianceId);
@@ -4800,31 +4698,6 @@ updateVillageHeroes(dt){
         this.questProgress = 0;
       }
     }
-    // Quête de ressources : dépôt en ville
-    if(q.type==="gatherResource" && q.area === town){
-      const resType = q.resource || "wood";
-      const current = q.delivered || 0;
-      const need = Math.max(0, (q.targetCount||0) - current);
-      const available = this.hero.resources ? (this.hero.resources[resType]||0) : 0;
-      if(available>0 && need>0){
-        const delivered = Math.min(available, need);
-        this.hero.resources[resType] -= delivered;
-        town[resType] = (town[resType]||0) + delivered;
-        q.delivered = current + delivered;
-        this.questProgress = q.delivered;
-      }
-
-      if((q.delivered||0) >= (q.targetCount||0)){
-        const reward = q.reward || 0;
-        this.hero.gold += reward;
-        const xpGain = 6 + this.hero.level*2;
-        this.hero.gainXp(xpGain);
-        const label = resType==="wood" ? "bois" : "pierre";
-        this.logEvent(`Quête accomplie : ressources livrées (${label}) à ${town.name} (+${reward} or, +${xpGain} XP).`);
-        this.currentQuest = null;
-        this.questProgress = 0;
-      }
-    }
     // Les autres types de quêtes se terminent via d'autres méthodes
   }
 
@@ -4956,58 +4829,6 @@ updateVillageHeroes(dt){
         if(!taken) remainingShards.push(shard);
       }
       this.manaShards = remainingShards;
-    }
-
-    // Ressources (bois / pierre)
-    if(this.resources){
-      const remainingRes = [];
-      for(const res of this.resources){
-        let taken=false;
-
-        if(dist(hero.x,hero.y,res.x,res.y) < 15){
-          hero.resources[res.type] = (hero.resources[res.type]||0) + 1;
-          taken = true;
-        } else {
-          for(const vh of this.villageHeroes){
-            if(vh.dead || !vh.town) continue;
-            if(dist(vh.x,vh.y,res.x,res.y) < 18){
-              vh.town[res.type] = (vh.town[res.type]||0) + 1;
-              taken = true;
-              break;
-            }
-          }
-
-          // Vagabonds : ramènent au village le plus proche
-          if(!taken && this.vagabonds){
-            for(const v of this.vagabonds){
-              if(!v || v.dead) continue;
-              if(dist(v.x,v.y,res.x,res.y) < 16){
-                const town = this.findClosestHumanTown(v.x,v.y);
-                if(town){
-                  town[res.type] = (town[res.type]||0) + 1;
-                }
-                taken = true;
-                break;
-              }
-            }
-          }
-
-          // Soldats : rapportent à leur ville
-          if(!taken){
-            for(const s of this.soldiers){
-              if(!s || s.dead || !s.town) continue;
-              if(dist(s.x,s.y,res.x,res.y) < 16){
-                s.town[res.type] = (s.town[res.type]||0) + 1;
-                taken = true;
-                break;
-              }
-            }
-          }
-        }
-
-        if(!taken) remainingRes.push(res);
-      }
-      this.resources = remainingRes;
     }
 
     // PRÉ-FRAGMENTS INSTABLES (mutables en bêtes magiques)
@@ -5164,17 +4985,6 @@ updateVillageHeroes(dt){
       town.gold = (town.gold||0) + townBonus;
       hero.gold += heroBonus;
       this.logEvent(`${hero.name} confie ${donated} fragment(s) à ${town.name} pour alimenter le commerce (+${heroBonus} or héros, +${townBonus} or ville).`);
-    }
-
-    // Dépôt des ressources brutes
-    const deliveredWood = hero.resources?.wood || 0;
-    const deliveredStone = hero.resources?.stone || 0;
-    if(deliveredWood>0 || deliveredStone>0){
-      town.wood = (town.wood||0) + deliveredWood;
-      town.stone = (town.stone||0) + deliveredStone;
-      hero.resources.wood = 0;
-      hero.resources.stone = 0;
-      this.logEvent(`${hero.name} dépose des ressources à ${town.name} (+${deliveredWood} bois, +${deliveredStone} pierre).`);
     }
 
     // Soins & achats en ville
@@ -5605,7 +5415,6 @@ updateVillageHeroes(dt){
     this.drawBackground(camX,camY);
     this.drawBridges(camX,camY);
     for(const p of this.pois) this.drawPoi(p,camX,camY);
-    for(const r of this.resources) this.drawResource(r,camX,camY);
     for(const g of this.goldItems) this.drawGold(g,camX,camY);
     for(const p of this.potions) this.drawPotion(p,camX,camY);
     if(this.manaShards){
@@ -5920,36 +5729,6 @@ drawBackground(camX,camY){
     ctx.strokeStyle="#b0b0b0";
     ctx.strokeRect(s.x-2,s.y-r-4,4,4);
   }
-
-  drawResource(res,camX,camY){
-    const ctx=this.ctx;
-    const s=this.worldToScreen(res.x,res.y,camX,camY);
-    ctx.save();
-    if(res.type==="wood"){
-      ctx.fillStyle="#6d4c41";
-      ctx.fillRect(s.x-4,s.y-2,8,6);
-      ctx.fillStyle="#2e7d32";
-      ctx.beginPath();
-      ctx.moveTo(s.x,s.y-10);
-      ctx.lineTo(s.x-8,s.y-2);
-      ctx.lineTo(s.x+8,s.y-2);
-      ctx.closePath();
-      ctx.fill();
-    } else {
-      ctx.fillStyle="#b0bec5";
-      ctx.beginPath();
-      ctx.moveTo(s.x-6,s.y+4);
-      ctx.lineTo(s.x,s.y-8);
-      ctx.lineTo(s.x+6,s.y+4);
-      ctx.closePath();
-      ctx.fill();
-      ctx.strokeStyle="#546e7a";
-      ctx.stroke();
-    }
-    ctx.restore();
-  }
-
-
 
   drawPreFragment(frag,camX,camY){
     const ctx = this.ctx;
@@ -6571,11 +6350,8 @@ drawBackground(camX,camY){
     const fragCount = hero.fragmentStableCount || 0;
     const fragLabel = hero.fragmentUltimateUnlocked ? "Mutation : Ultime prêt" : (`Mutation : ${fragCount}/10`);
     ctx.fillText(`Or : ${hero.gold}   Potions : ${hero.potionsCount}   Sac : ${hero.backpack.length}   Fragments : ${fragLabel}`,mx,info2Y);
-    const resText = `Bois : ${hero.resources?.wood||0}   Pierre : ${hero.resources?.stone||0}`;
-    ctx.fillText(resText,mx,info2Y+14);
-
     const biome=this.getBiome(hero.x,hero.y);
-    let biomeY=info2Y+28;
+    let biomeY=info2Y+14;
     ctx.fillStyle="#a5d6a7"; ctx.font="9px Helvetica";
     ctx.fillText(`Biome : ${biome.charAt(0).toUpperCase()+biome.slice(1)}`,mx,biomeY);
 
@@ -6727,13 +6503,6 @@ drawBackground(camX,camY){
         ctx.fillText("Quête : Livrer des provisions",panelX+8,qY+14);
         ctx.fillStyle="#dddddd"; ctx.font="9px Helvetica";
         ctx.fillText(`De ${fromName} vers ${toName}`,panelX+8,qY+28);
-        ctx.fillText(`Récompense : ${q.reward} or`,panelX+8,qY+40);
-      } else if(q.type==="gatherResource"){
-        const label = q.resource==="wood" ? "bois" : "pierre";
-        const delivered = q.delivered||0;
-        ctx.fillText(`Quête : Livrer ${q.targetCount} ${label}`,panelX+8,qY+14);
-        ctx.fillStyle="#dddddd"; ctx.font="9px Helvetica";
-        ctx.fillText(`Progression : ${delivered}/${q.targetCount}`,panelX+8,qY+28);
         ctx.fillText(`Récompense : ${q.reward} or`,panelX+8,qY+40);
       } else {
         const areaName = q.area ? (q.area.type==="zone" ? "Portail" : "Forêt") : "Zone";
