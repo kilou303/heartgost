@@ -45,7 +45,7 @@ const MAX_LEVEL = 50;
 // Temps : 20 secondes IRL = 1 an en jeu
 const YEAR_DURATION = 20.0;      // 20s -> 1 an
 
-const MONSTER_LIMIT = 600; // limite globale de démons vivants
+const MONSTER_LIMIT = 180; // limite globale de démons vivants
 
 // Spawn démons : chaque nid (forêt ou zone) spawn toutes les 4s, max de démons configurables
 const NEST_SPAWN_INTERVAL = 4.0;
@@ -95,14 +95,6 @@ const ALLIANCE_WAR_MIN_DURATION = 140.0;
 const ALLIANCE_WAR_MAX_DURATION = 260.0;
 const ALLIANCE_WAR_CHECK_INTERVAL = 45.0;
 const ALLIANCE_WAR_BASE_CHANCE = 0.06;
-
-const ALLIANCE_WAR_ASSAULT_INTERVAL = 32.0;
-const ALLIANCE_WAR_STANCE_DECAY = 0.08; // amortit progressivement les bonus attaque/défense
-const ALLIANCE_WAR_DEFENSE_EFFECT = 0.4; // contribution d'un bonus de défense à la réduction des dégâts
-const ALLIANCE_SUMMIT_INTERVAL = 90.0;
-const ALLIANCE_SUMMIT_RELATION_MIN = 8;
-const ALLIANCE_SUMMIT_RELATION_MAX = 16;
-const ALLIANCE_SUMMIT_TRUCE_THRESHOLD = -5;
 
 const ALLIANCE_TOWN_SIEGE_DAMAGE = 18;        // dégâts "par soldat/héros" sur les villes ennemies
 const ALLIANCE_TOWN_PILLAGE_GOLD_RATIO = 0.35;
@@ -1519,8 +1511,6 @@ class Game {
     // Timer de portails dynamiques
     this.portalSpawnTimer = 0;
     this.allianceWarTimer = 0;
-    this.allianceDiplomacyTimer = 0;
-    this.warStances = {};
 
     // Vie et interactions de villes
     this.townLifeTimer = 0;
@@ -1921,43 +1911,6 @@ class Game {
     return false;
   }
 
-  ensureWarStance(allianceId){
-    if(allianceId==null) return {attack:1, defense:1, diplomacyCooldown:0};
-    this.warStances = this.warStances || {};
-    if(!this.warStances[allianceId]){
-      this.warStances[allianceId] = {attack:1, defense:1, diplomacyCooldown:0};
-    }
-    return this.warStances[allianceId];
-  }
-
-  boostAllianceStance(allianceId, type, bonus){
-    if(allianceId==null) return;
-    const stance = this.ensureWarStance(allianceId);
-    if(type==="attack"){
-      stance.attack = Math.max(stance.attack, 1+bonus);
-    } else if(type==="defense"){
-      stance.defense = Math.max(stance.defense, 1+bonus);
-    }
-  }
-
-  decayWarStances(dt){
-    if(!this.warStances) return;
-    const decay = Math.max(0, 1 - ALLIANCE_WAR_STANCE_DECAY*dt);
-    for(const key of Object.keys(this.warStances)){
-      const st = this.warStances[key];
-      st.attack = 1 + (st.attack-1)*decay;
-      st.defense = 1 + (st.defense-1)*decay;
-      st.diplomacyCooldown = Math.max(0, (st.diplomacyCooldown||0) - dt);
-    }
-  }
-
-  computeSiegeFactor(attackerAllianceId, defenderAllianceId){
-    const attackStance = this.ensureWarStance(attackerAllianceId);
-    const defenseStance = this.ensureWarStance(defenderAllianceId);
-    const mitigation = Math.min(0.6, (defenseStance.defense-1)*ALLIANCE_WAR_DEFENSE_EFFECT);
-    return attackStance.attack * (1 - mitigation);
-  }
-
   startAllianceWar(a,b){
     if(!a || !b) return;
     if(a.id === b.id) return;
@@ -1968,137 +1921,13 @@ class Game {
       a:a.id,
       b:b.id,
       remaining:duration,
-      active:true,
-      assaultTimer: Math.random()*ALLIANCE_WAR_ASSAULT_INTERVAL
+      active:true
     });
 
     // Une guerre dégrade fortement les relations
     this.adjustAllianceRelation(a.id,b.id,-35);
 
-    // Bonus temporaires de mobilisation
-    this.boostAllianceStance(a.id,"attack",0.25);
-    this.boostAllianceStance(b.id,"attack",0.25);
-    this.boostAllianceStance(a.id,"defense",0.2);
-    this.boostAllianceStance(b.id,"defense",0.2);
-
     this.logEvent(`La guerre éclate entre ${a.name} et ${b.name} !`);
-  }
-
-  pickFrontlineTown(defenderAllianceId){
-    if(defenderAllianceId==null) return null;
-    const towns = (this.towns && this.towns.length>0 ? this.towns : this.pois.filter(p=>p.type==="town"))
-      .filter(t=>t && !t.isDemonTown && t.allianceId===defenderAllianceId);
-    if(towns.length===0) return null;
-
-    // Priorité aux villes déjà fragilisées
-    const weighted = towns.slice().sort((a,b)=>{
-      const ahp = (a.hp||a.maxHp||1)/(a.maxHp||1);
-      const bhp = (b.hp||b.maxHp||1)/(b.maxHp||1);
-      return ahp - bhp;
-    });
-    const top = weighted.slice(0, Math.max(1, Math.floor(weighted.length/2)));
-    return randChoice(top);
-  }
-
-  triggerAllianceOffensive(war){
-    const attackerId = Math.random()<0.5 ? war.a : war.b;
-    const defenderId = attackerId===war.a ? war.b : war.a;
-    const attacker = this.getAllianceById(attackerId);
-    const defender = this.getAllianceById(defenderId);
-    const targetTown = this.pickFrontlineTown(defenderId);
-    if(!attacker || !defender || !targetTown) return;
-
-    this.boostAllianceStance(attackerId,"attack",0.35);
-    this.boostAllianceStance(defenderId,"defense",0.3);
-
-    this.logEvent(`${attacker.name} lance une offensive vers ${targetTown.name}; ${defender.name} se retranche pour défendre la ville.`);
-  }
-
-  endAllianceWarBetween(aId,bId, reason){
-    let ended=false;
-    for(const war of this.allianceWars){
-      if(!war.active) continue;
-      if((war.a===aId && war.b===bId) || (war.a===bId && war.b===aId)){
-        war.active = false;
-        war.remaining = 0;
-        ended = true;
-      }
-    }
-    if(ended){
-      const a = this.getAllianceById(aId);
-      const b = this.getAllianceById(bId);
-      const label = reason || (a && b ? `Une trêve est conclue entre ${a.name} et ${b.name}.` : `Une trêve est conclue.`);
-      this.logEvent(label);
-      if(aId!=null && bId!=null){
-        this.adjustAllianceRelation(aId,bId, randInt(6,12));
-      }
-      this.allianceWars = this.allianceWars.filter(w=>w.active);
-    }
-  }
-
-  pickNeutralGroundLabel(){
-    const labels = [
-      "les ruines anciennes",
-      "un monastère isolé",
-      "le carrefour des marchands",
-      "un campement neutre",
-      "les terres jurées neutres"
-    ];
-    return randChoice(labels);
-  }
-
-  holdDiplomaticSummit(){
-    const alliances = (this.alliances||[]).filter(a=>a && a.towns && a.towns.some(t=>!t.isDemonTown));
-    if(alliances.length<2) return;
-
-    let bestA=null, bestB=null, worstRel=15;
-    for(let i=0;i<alliances.length;i++){
-      for(let j=i+1;j<alliances.length;j++){
-        const a = alliances[i];
-        const b = alliances[j];
-        const rel = this.getAllianceRelation(a.id,b.id);
-        const atWar = this.areAlliancesAtWar(a.id,b.id);
-        const stanceA = this.ensureWarStance(a.id);
-        const stanceB = this.ensureWarStance(b.id);
-        // éviter de spammer les mêmes alliances en cooldown diplomatique
-        if((stanceA.diplomacyCooldown||0)>0 || (stanceB.diplomacyCooldown||0)>0) continue;
-
-        if(atWar || rel < worstRel){
-          bestA=a; bestB=b; worstRel=rel;
-        }
-      }
-    }
-
-    if(bestA && bestB){
-      const location = this.pickNeutralGroundLabel();
-      const delta = randInt(ALLIANCE_SUMMIT_RELATION_MIN, ALLIANCE_SUMMIT_RELATION_MAX);
-      const relBefore = this.getAllianceRelation(bestA.id,bestB.id);
-      this.logEvent(`Réunion diplomatique à ${location} entre ${bestA.name} et ${bestB.name}.`);
-      this.adjustAllianceRelation(bestA.id,bestB.id, delta);
-      this.boostAllianceStance(bestA.id,"defense",0.15);
-      this.boostAllianceStance(bestB.id,"defense",0.15);
-
-      const relAfter = this.getAllianceRelation(bestA.id,bestB.id);
-      const stillWar = this.areAlliancesAtWar(bestA.id,bestB.id);
-      if(stillWar && relAfter > ALLIANCE_SUMMIT_TRUCE_THRESHOLD){
-        this.endAllianceWarBetween(bestA.id,bestB.id, `Une trêve est conclue entre ${bestA.name} et ${bestB.name} après les négociations.`);
-      } else if(stillWar){
-        for(const war of this.allianceWars){
-          if(!war.active) continue;
-          if((war.a===bestA.id && war.b===bestB.id)||(war.a===bestB.id && war.b===bestA.id)){
-            war.remaining *= 0.7;
-          }
-        }
-      }
-
-      const stanceA = this.ensureWarStance(bestA.id);
-      const stanceB = this.ensureWarStance(bestB.id);
-      stanceA.diplomacyCooldown = ALLIANCE_SUMMIT_INTERVAL*0.5;
-      stanceB.diplomacyCooldown = ALLIANCE_SUMMIT_INTERVAL*0.5;
-      if(relBefore < relAfter && !stillWar){
-        this.logEvent(`Les émissaires repartent satisfaits : relations ${bestA.name}/${bestB.name} améliorées.`);
-      }
-    }
   }
 
     updateCoalitionState(){
@@ -2199,17 +2028,11 @@ class Game {
 updateAllianceWars(dt){
     // Met à jour l'état de coalition contre les démons
     this.updateCoalitionState();
-    this.decayWarStances(dt);
 
     // décrémente les guerres existantes
     for(const war of this.allianceWars){
       if(!war.active) continue;
       war.remaining -= dt;
-      war.assaultTimer = (war.assaultTimer||0) + dt;
-      if(war.assaultTimer >= ALLIANCE_WAR_ASSAULT_INTERVAL){
-        war.assaultTimer = 0;
-        this.triggerAllianceOffensive(war);
-      }
       if(war.remaining <= 0){
         war.active = false;
         const a = this.getAllianceById(war.a);
@@ -2222,12 +2045,6 @@ updateAllianceWars(dt){
       }
     }
     this.allianceWars = this.allianceWars.filter(w=>w.active);
-
-    this.allianceDiplomacyTimer = (this.allianceDiplomacyTimer||0) + dt;
-    if(this.allianceDiplomacyTimer >= ALLIANCE_SUMMIT_INTERVAL){
-      this.allianceDiplomacyTimer = 0;
-      this.holdDiplomaticSummit();
-    }
 
     // de temps en temps, nouvelle guerre (sauf si coalition active contre les démons)
     this.allianceWarTimer = (this.allianceWarTimer || 0) + dt;
@@ -2290,8 +2107,7 @@ updateAllianceWars(dt){
     if(attackerAllianceId == null) return;
     if(!this.areAlliancesAtWar(attackerAllianceId, town.allianceId)) return;
 
-    const siegeMult = this.computeSiegeFactor(attackerAllianceId, town.allianceId);
-    const dps = ALLIANCE_TOWN_SIEGE_DAMAGE * factor * siegeMult;
+    const dps = ALLIANCE_TOWN_SIEGE_DAMAGE * factor;
     const dmg = dps * dt;
     town.hp = clamp(town.hp - dmg, 0, town.maxHp);
 
