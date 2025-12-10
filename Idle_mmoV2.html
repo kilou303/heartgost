@@ -1318,10 +1318,10 @@ class AllianceSoldier {
     this.allianceId = town.allianceId;
     this.level = clamp(Math.max(1,(town.level||1)-1),1,MAX_LEVEL);
 
-    // Nom aléatoire pour le soldat, lié à sa ville
+    // Nom du soldat : un prénom aléatoire suivi du nom de sa ville
     this.baseName = randChoice(HERO_NAMES);
     this.title = randChoice(HERO_TITLES);
-    this.name = `${this.baseName} ${this.title} de ${town.name}`;
+    this.name = `${this.baseName} ${this.town.name}`;
 
     // Stats de base
     this.maxHp = 14 + this.level*3;
@@ -3149,8 +3149,10 @@ spawnNeutral(){
       const tile = this.getTileAt(mx,my);
       // On évite toujours l'eau
       if(tile===TILE.WATER) continue;
-      // On évite les villes humaines, mais on autorise la ville démoniaque elle-même
-      if(tile===TILE.TOWN && !town.isDemonTown) continue;
+
+      // On évite les villes humaines voisines, même si la tilemap n'indique pas explicitement la ville
+      const tooCloseHuman = towns.some(t=>!t.isDemonTown && dist(mx,my,t.x,t.y)<180);
+      if(tooCloseHuman) continue;
 
       spawnX = mx;
       spawnY = my;
