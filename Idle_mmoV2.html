@@ -1318,12 +1318,10 @@ class AllianceSoldier {
     this.allianceId = town.allianceId;
     this.level = clamp(Math.max(1,(town.level||1)-1),1,MAX_LEVEL);
 
-    // Nom aléatoire pour le soldat, lié à sa ville
+    // Nom du soldat : un prénom aléatoire suivi du nom de sa ville
     this.baseName = randChoice(HERO_NAMES);
     this.title = randChoice(HERO_TITLES);
-    // Nom composé de deux parties aléatoires pour éviter d'afficher le nom de la ville
-    this.familyName = randChoice(HERO_NAMES.filter(n=>n!==this.baseName)) || this.baseName;
-    this.name = `${this.baseName} ${this.familyName}`;
+    this.name = `${this.baseName} ${this.town.name}`;
 
     // Stats de base
     this.maxHp = 14 + this.level*3;
