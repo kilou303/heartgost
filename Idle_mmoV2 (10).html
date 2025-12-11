@@ -452,10 +452,10 @@ function dist(x1,y1,x2,y2){ return Math.hypot(x2-x1,y2-y1); }
 function randInt(a,b){ return a + Math.floor(Math.random()*(b-a+1)); }
 function randChoice(arr){ return arr[Math.floor(Math.random()*arr.length)]; }
 
-// --------- PASSIFS COMMUNS (héros + héros de village) ---------
+  // --------- PASSIFS COMMUNS (héros + héros de village) ---------
 
-function applyPassiveOnDamage(ch, dmg, target, game, opts={}){
-  if(dmg<=0 || !ch.passive) return;
+  function applyPassiveOnDamage(ch, dmg, target, game, opts={}){
+    if(dmg<=0 || !ch.passive) return;
 
   // Vol de vie global (passif + sort)
   const spellLifeSteal = opts.spellLifeSteal || 0;
@@ -476,46 +476,8 @@ function applyPassiveOnDamage(ch, dmg, target, game, opts={}){
         const heal = Math.max(1, Math.floor(dmg*ratio));
         ch.hp = clamp(ch.hp+heal,0,ch.maxHp);
       }
-    }
-  }
-
-  handleAllianceDiplomacy(dt){
-    this.allianceSummitTimer = (this.allianceSummitTimer || 0) + dt;
-    if(this.allianceSummitTimer < ALLIANCE_WAR_SUMMIT_INTERVAL) return;
-    this.allianceSummitTimer = 0;
-
-    const alliances = (this.alliances || []).filter(a=>a && a.towns && a.towns.length>0);
-    if(alliances.length < 2) return;
-
-    let targetA = null;
-    let targetB = null;
-    let worstRel = 15;
-    for(let i=0;i<alliances.length;i++){
-      const a = alliances[i];
-      for(let j=i+1;j<alliances.length;j++){
-        const b = alliances[j];
-        const rel = this.getAllianceRelation(a.id,b.id);
-        const atWar = this.areAlliancesAtWar(a.id,b.id);
-        const priorityScore = atWar ? -150 : rel;
-        if(priorityScore < worstRel){
-          worstRel = priorityScore;
-          targetA = a;
-          targetB = b;
-        }
       }
     }
-
-    if(!targetA || !targetB) return;
-
-    const key = this.getAlliancePairKey(targetA.id, targetB.id);
-    if(this.allianceDiplomacyCooldowns[key] && this.allianceDiplomacyCooldowns[key] > this.worldTime){
-      return; // encore sous cooldown diplomatique
-    }
-
-    if(Math.random() < ALLIANCE_NEUTRAL_SUMMIT_CHANCE){
-      this.launchAllianceSummit(targetA, targetB);
-    }
-  }
 
   // Explosif : tous les X coups -> explosion AOE
   if(ch.passive.explosiveEvery){
@@ -2110,9 +2072,47 @@ class Game {
     }
   }
 
-updateAllianceWars(dt){
-    // Met à jour l'état de coalition contre les démons
-    this.updateCoalitionState();
+  handleAllianceDiplomacy(dt){
+    this.allianceSummitTimer = (this.allianceSummitTimer || 0) + dt;
+    if(this.allianceSummitTimer < ALLIANCE_WAR_SUMMIT_INTERVAL) return;
+    this.allianceSummitTimer = 0;
+
+    const alliances = (this.alliances || []).filter(a=>a && a.towns && a.towns.length>0);
+    if(alliances.length < 2) return;
+
+    let targetA = null;
+    let targetB = null;
+    let worstRel = 15;
+    for(let i=0;i<alliances.length;i++){
+      const a = alliances[i];
+      for(let j=i+1;j<alliances.length;j++){
+        const b = alliances[j];
+        const rel = this.getAllianceRelation(a.id,b.id);
+        const atWar = this.areAlliancesAtWar(a.id,b.id);
+        const priorityScore = atWar ? -150 : rel;
+        if(priorityScore < worstRel){
+          worstRel = priorityScore;
+          targetA = a;
+          targetB = b;
+        }
+      }
+    }
+
+    if(!targetA || !targetB) return;
+
+    const key = this.getAlliancePairKey(targetA.id, targetB.id);
+    if(this.allianceDiplomacyCooldowns[key] && this.allianceDiplomacyCooldowns[key] > this.worldTime){
+      return; // encore sous cooldown diplomatique
+    }
+
+    if(Math.random() < ALLIANCE_NEUTRAL_SUMMIT_CHANCE){
+      this.launchAllianceSummit(targetA, targetB);
+    }
+  }
+
+  updateAllianceWars(dt){
+      // Met à jour l'état de coalition contre les démons
+      this.updateCoalitionState();
 
     // décrémente les guerres existantes
     for(const war of this.allianceWars){
