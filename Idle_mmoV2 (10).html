@@ -1185,6 +1185,9 @@ class Vagabond {
     this.target = null;
     this.patrolTarget = null;
 
+    this.bodyColor = randChoice(["#4cc9f0","#a5d6a7","#ffb74d","#ce93d8"]);
+    this.borderColor = "#1d3557";
+
     this.dead = false;
     this.respawnTimer = 0;
 
@@ -1192,7 +1195,7 @@ class Vagabond {
     this.xpToNext = 12;
   }
 
-  isAlive(){ return !this.dead; }
+  isAlive(){ return !this.dead && this.hp>0; }
 
   gainXp(amount){
     if(this.dead || amount<=0) return;
@@ -3435,8 +3438,14 @@ spawnNeutral(){
   
   updateVagabonds(dt){
     if(!this.vagabonds || this.vagabonds.length===0) return;
+    const remaining=[];
     for(const v of this.vagabonds){
-      if(!v || v.dead) continue;
+      if(!v || v.dead || v.hp<=0){
+        if(v) v.dead = true;
+        continue;
+      }
+
+      remaining.push(v);
 
       // Timers d'attaque / sort
       v.attackTimer = Math.max(0, v.attackTimer-dt);
@@ -3646,6 +3655,8 @@ spawnNeutral(){
         this.logEvent(`${v.name} entre au Hall des héros en tant qu'aventurier de Niv ${v.level}.`);
       }
     }
+
+    this.vagabonds = remaining;
   }
 
 updateVillageHeroes(dt){
@@ -4245,6 +4256,15 @@ updateVillageHeroes(dt){
           bestTarget={obj:vh,dist:d,type:"villageHero"};
         }
       }
+      if(this.vagabonds){
+        for(const v of this.vagabonds){
+          if(!v || !v.isAlive || !v.isAlive()) continue;
+          const d=dist(m.x,m.y,v.x,v.y);
+          if(d<bestTarget.dist){
+            bestTarget={obj:v,dist:d,type:"vagabond"};
+          }
+        }
+      }
       for(const n of this.neutrals){
         const d=dist(m.x,m.y,n.x,n.y);
         if(d<bestTarget.dist){
@@ -4329,10 +4349,10 @@ updateVillageHeroes(dt){
       if(m.spell) m.spellTimer = Math.max(0,m.spellTimer-dt);
 
       // Sorts des démons (avec gestion du renvoi du héros)
-      if(bestTarget.type!=="portalCenter" &&
-         m.spell && m.spellTimer<=0 && d<(m.spell.range||240) && d>40 &&
-         (m.spell.type==="projectile" || m.spell.type==="aoe")){
-        const color = SPELL_COLORS[m.spell.name] || "#ff8888";
+        if(bestTarget.type!=="portalCenter" &&
+           m.spell && m.spellTimer<=0 && d<(m.spell.range||240) && d>40 &&
+           (m.spell.type==="projectile" || m.spell.type==="aoe")){
+          const color = SPELL_COLORS[m.spell.name] || "#ff8888";
 
         if(bestTarget.type==="hero" && hero.reflectTimer>0){
           // Le sort est renvoyé : le démon prend son propre sort,
@@ -4345,7 +4365,7 @@ updateVillageHeroes(dt){
           hero.y -= diry*KNOCKBACK_SELF*0.4;
           this.spawnEffect("reflectHit",{start:{x:hero.x,y:hero.y},end:{x:m.x,y:m.y},color});
         } else {
-          const defTarget = (bestTarget.type==="hero" || bestTarget.type==="villageHero" || bestTarget.type==="neutral" || bestTarget.type==="soldier")
+          const defTarget = (bestTarget.type==="hero" || bestTarget.type==="villageHero" || bestTarget.type==="neutral" || bestTarget.type==="soldier" || bestTarget.type==="vagabond")
             ? bestTarget.obj
             : hero;
           const dmg = computeSpellDamage(m, defTarget, m.spell, this, 1.0);
@@ -4392,6 +4412,17 @@ updateVillageHeroes(dt){
           vh.y += diry*KNOCKBACK_SELF;
           applyPassiveOnDamage(vh, dmg, m, this, {});
         }
+        if(bestTarget.type==="vagabond" && typeof bestTarget.obj.isAlive==="function" && bestTarget.obj.isAlive() && bestTarget.obj.attackTimer<=0){
+          const vb=bestTarget.obj;
+          const dmg = Math.max(1,vb.attack-(m.defense||0));
+          m.hp -= dmg;
+          vb.attackTimer = vb.attackDelay;
+          m.x -= dirx*KNOCKBACK_MONSTER;
+          m.y -= diry*KNOCKBACK_MONSTER;
+          vb.x += dirx*KNOCKBACK_SELF;
+          vb.y += diry*KNOCKBACK_SELF;
+          applyPassiveOnDamage(vb, dmg, m, this, {});
+        }
 
         // démon frappe sa cible
         if(m.attackTimer<=0){
@@ -4408,7 +4439,7 @@ updateVillageHeroes(dt){
           } else {
             const defTarget = (bestTarget.type==="hero")
               ? hero
-              : ((bestTarget.type==="villageHero" || bestTarget.type==="soldier") ? bestTarget.obj : null);
+              : ((bestTarget.type==="villageHero" || bestTarget.type==="soldier" || bestTarget.type==="vagabond") ? bestTarget.obj : null);
             if(defTarget){
               const dmgH=Math.max(1,m.attack - (defTarget.defense||0));
               const beforeHp = defTarget.hp;
@@ -4420,7 +4451,12 @@ updateVillageHeroes(dt){
               m.y -= diry*(KNOCKBACK_MONSTER*0.4);
 
               if(beforeHp>0 && defTarget.hp<=0){
-                this.onHeroKilledByMonster(defTarget,m);
+                if(bestTarget.type==="hero" || bestTarget.type==="villageHero"){
+                  this.onHeroKilledByMonster(defTarget,m);
+                } else if(bestTarget.type==="vagabond"){
+                  defTarget.dead = true;
+                  this.logEvent(`${defTarget.name} est tombé face aux démons.`);
+                }
               }
             }
           }
@@ -5421,24 +5457,34 @@ updateVillageHeroes(dt){
     if(!vag || vag.dead) return;
     const ctx=this.ctx;
     const s=this.worldToScreen(vag.x,vag.y,camX,camY);
-    const r=10;
+    const r=13;
     ctx.save();
 
-    // corps
+    // corps proche des héros de ville
     ctx.beginPath();
     ctx.arc(s.x,s.y,r,0,Math.PI*2);
-    ctx.fillStyle="#8bc34a";
+    ctx.fillStyle=vag.bodyColor || "#8bc34a";
     ctx.fill();
-    ctx.strokeStyle="#33691e";
+    ctx.lineWidth=2;
+    ctx.strokeStyle=vag.borderColor || "#1d3557";
     ctx.stroke();
 
-    // capuche / aura différente selon l'état
+    // visage
+    ctx.fillStyle="#f1e0c5";
+    ctx.fillRect(s.x-6,s.y-6,12,6);
+    ctx.fillStyle="#000";
+    ctx.fillRect(s.x-3,s.y-5,2,2);
+    ctx.fillRect(s.x+1,s.y-5,2,2);
+    ctx.fillStyle="rgba(0,0,0,0.4)";
+    ctx.fillRect(s.x-7,s.y-8,14,3);
+
+    // orbes vertes caractéristiques
+    ctx.fillStyle = vag.state==="vagabond" ? "#66bb6a" : "#9ccc65";
     ctx.beginPath();
-    ctx.arc(s.x,s.y-4,r*0.9,Math.PI,Math.PI*2);
-    ctx.fillStyle = vag.state==="vagabond" ? "#558b2f" : "#9e9d24";
+    ctx.arc(s.x-10, s.y-4, 4, 0, Math.PI*2);
+    ctx.arc(s.x+10, s.y-4, 4, 0, Math.PI*2);
+    ctx.arc(s.x, s.y+12, 4, 0, Math.PI*2);
     ctx.fill();
-    ctx.strokeStyle="#33691e";
-    ctx.stroke();
 
     // barre de vie
     const ratio = vag.maxHp>0 ? vag.hp/vag.maxHp : 0;
