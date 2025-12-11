@@ -1845,6 +1845,37 @@ class Game {
     return enemies;
   }
 
+  // Calcule un score de priorité pour une cible de combat afin d'orienter les unités vers
+  // les menaces les plus pertinentes (proximité, faiblesse, importance stratégique).
+  getCombatTargetScore(actor, target, distance, meta={}){
+    const hpRatio = target.maxHp ? clamp(target.hp/target.maxHp,0,1) : 1;
+    let score = (1 - hpRatio) * 35; // cibler plus volontiers les cibles affaiblies
+
+    // proximité : bonus décroissant jusqu'à 260 de distance
+    score += Math.max(0, 260 - distance) * 0.3;
+
+    if(meta.isMonster){
+      score += 18;
+      if(target.isDemonLord) score += 80; // priorité sur les seigneurs démons
+    }
+
+    if(meta.isEnemyUnit){
+      score += 12;
+    }
+
+    if(meta.isSiegeTarget){
+      score += 25;
+      if(meta.isDemonTown) score += 30;
+    }
+
+    // Défense des alliés : bonus lorsqu'un acteur lié à une alliance protège un allié
+    if(meta.protectAllianceId && target.allianceId === meta.protectAllianceId){
+      score += 10;
+    }
+
+    return score;
+  }
+
   areAlliancesAtWar(aId,bId){
     if(aId==null || bId==null) return false;
     if(aId===bId) return false;
@@ -3458,23 +3489,25 @@ spawnNeutral(){
       const allianceId = (v.allianceId!=null ? v.allianceId : null);
       const enemyAlliances = allianceId!=null ? this.getEnemyAlliancesFor(allianceId) : [];
 
+      const combatOptions = [];
+
       // 1) Priorité : démons proches
-      let bestMonster=null;
       for(const m of this.monsters){
         const d = dist(v.x,v.y,m.x,m.y);
         if(d>260) continue;
-        if(!bestMonster || d<bestMonster.d) bestMonster={m,d};
+        const score = this.getCombatTargetScore(v, m, d, {isMonster:true});
+        combatOptions.push({type:"monster", target:m, d, score});
       }
 
       // 2) Ensuite, unités ennemies si guerre active et le vagabond a une alliance
-      let bestEnemyUnit=null;
-      if(!bestMonster && allianceId!=null && enemyAlliances.length>0){
+      if(allianceId!=null && enemyAlliances.length>0){
         for(const s of this.soldiers){
           if(!s.isAlive || !s.isAlive()) continue;
           if(!enemyAlliances.includes(s.allianceId)) continue;
           const d = dist(v.x,v.y,s.x,s.y);
           if(d>260) continue;
-          if(!bestEnemyUnit || d<bestEnemyUnit.d) bestEnemyUnit={u:s,d};
+          const score = this.getCombatTargetScore(v, s, d, {isEnemyUnit:true});
+          combatOptions.push({type:"enemyUnit", target:s, d, score});
         }
         for(const vh of this.villageHeroes){
           if(!vh || vh.dead) continue;
@@ -3482,24 +3515,31 @@ spawnNeutral(){
           if(!enemyAlliances.includes(vh.town.allianceId)) continue;
           const d = dist(v.x,v.y,vh.x,vh.y);
           if(d>260) continue;
-          if(!bestEnemyUnit || d<bestEnemyUnit.d) bestEnemyUnit={u:vh,d};
+          const score = this.getCombatTargetScore(v, vh, d, {isEnemyUnit:true});
+          combatOptions.push({type:"enemyUnit", target:vh, d, score});
         }
       }
 
       // 3) Enfin, ville ennemie proche -> siège (si alliance)
-      let siegeTown=null;
-      if(!bestMonster && !bestEnemyUnit && allianceId!=null && enemyAlliances.length>0){
+      if(allianceId!=null && enemyAlliances.length>0){
         for(const t of this.towns){
           if(t.isDemonTown) continue;
           if(!enemyAlliances.includes(t.allianceId)) continue;
           const d = dist(v.x,v.y,t.x,t.y);
           if(d>260) continue;
-          if(!siegeTown || d<siegeTown.d) siegeTown={town:t,d};
+          const score = this.getCombatTargetScore(v, t, d, {isSiegeTarget:true});
+          combatOptions.push({type:"siegeTown", target:t, d, score});
         }
       }
 
-      if(bestMonster){
-        const target = bestMonster.m;
+      combatOptions.sort((a,b)=>{
+        if(b.score === a.score) return a.d - b.d;
+        return b.score - a.score;
+      });
+      const bestOption = combatOptions[0];
+
+      if(bestOption && bestOption.type==="monster"){
+        const target = bestOption.target;
         const dx = target.x - v.x;
         const dy = target.y - v.y;
         const d = Math.hypot(dx,dy)||1;
@@ -3540,8 +3580,8 @@ spawnNeutral(){
           applyPassiveOnDamage(v, dmg, target, this, {});
         }
 
-      } else if(bestEnemyUnit){
-        const target = bestEnemyUnit.u;
+      } else if(bestOption && bestOption.type==="enemyUnit"){
+        const target = bestOption.target;
         const dx = target.x - v.x;
         const dy = target.y - v.y;
         const d = Math.hypot(dx,dy)||1;
@@ -3578,8 +3618,8 @@ spawnNeutral(){
           applyPassiveOnDamage(v, dmg, target, this, {});
         }
 
-      } else if(siegeTown){
-        const t = siegeTown.town;
+      } else if(bestOption && bestOption.type==="siegeTown"){
+        const t = bestOption.target;
         const dx = t.x - v.x;
         const dy = t.y - v.y;
         const d = Math.hypot(dx,dy)||1;
@@ -3691,23 +3731,25 @@ updateVillageHeroes(dt){
       const allianceId = town ? town.allianceId : null;
       const enemyAlliances = this.getEnemyAlliancesFor(allianceId);
 
+      const combatOptions = [];
+
       // 1) Priorité : démons proches
-      let bestMonster=null;
       for(const m of this.monsters){
         const d = dist(vh.x,vh.y,m.x,m.y);
         if(d>260) continue;
-        if(!bestMonster || d<bestMonster.d) bestMonster={m,d};
+        const score = this.getCombatTargetScore(vh, m, d, {isMonster:true});
+        combatOptions.push({type:"monster", target:m, d, score});
       }
 
       // 2) Ensuite, unités ennemies (soldats + héros de village) si guerre active
-      let bestEnemyUnit=null;
-      if(!bestMonster && enemyAlliances.length>0){
+      if(enemyAlliances.length>0){
         for(const s of this.soldiers){
           if(!s.isAlive || !s.isAlive()) continue;
           if(!enemyAlliances.includes(s.allianceId)) continue;
           const d = dist(vh.x,vh.y,s.x,s.y);
           if(d>260) continue;
-          if(!bestEnemyUnit || d<bestEnemyUnit.d) bestEnemyUnit={u:s,d};
+          const score = this.getCombatTargetScore(vh, s, d, {isEnemyUnit:true});
+          combatOptions.push({type:"enemyUnit", target:s, d, score});
         }
         for(const other of this.villageHeroes){
           if(other===vh) continue;
@@ -3716,24 +3758,31 @@ updateVillageHeroes(dt){
           if(!enemyAlliances.includes(other.town.allianceId)) continue;
           const d = dist(vh.x,vh.y,other.x,other.y);
           if(d>260) continue;
-          if(!bestEnemyUnit || d<bestEnemyUnit.d) bestEnemyUnit={u:other,d};
+          const score = this.getCombatTargetScore(vh, other, d, {isEnemyUnit:true});
+          combatOptions.push({type:"enemyUnit", target:other, d, score});
         }
       }
 
       // 3) Enfin, ville ennemie à proximité -> siège
-      let siegeTown=null;
-      if(!bestMonster && !bestEnemyUnit && enemyAlliances.length>0){
+      if(enemyAlliances.length>0){
         for(const t of this.towns){
           if(t.isDemonTown) continue;
           if(!enemyAlliances.includes(t.allianceId)) continue;
           const d = dist(vh.x,vh.y,t.x,t.y);
           if(d>260) continue;
-          if(!siegeTown || d<siegeTown.d) siegeTown={town:t,d};
+          const score = this.getCombatTargetScore(vh, t, d, {isSiegeTarget:true});
+          combatOptions.push({type:"siegeTown", target:t, d, score});
         }
       }
 
-      if(bestMonster){
-        const target = bestMonster.m;
+      combatOptions.sort((a,b)=>{
+        if(b.score === a.score) return a.d - b.d;
+        return b.score - a.score;
+      });
+      const bestOption = combatOptions[0];
+
+      if(bestOption && bestOption.type==="monster"){
+        const target = bestOption.target;
         const dx=target.x-vh.x, dy=target.y-vh.y;
         const d = Math.hypot(dx,dy)||1;
         const dirx=dx/d, diry=dy/d;
@@ -3769,8 +3818,8 @@ updateVillageHeroes(dt){
           applyPassiveOnDamage(vh, dmg, target, this, {});
         }
 
-      } else if(bestEnemyUnit){
-        const target = bestEnemyUnit.u;
+      } else if(bestOption && bestOption.type==="enemyUnit"){
+        const target = bestOption.target;
         const dx=target.x-vh.x, dy=target.y-vh.y;
         const d = Math.hypot(dx,dy)||1;
         const dirx=dx/d, diry=dy/d;
@@ -3805,8 +3854,8 @@ updateVillageHeroes(dt){
           applyPassiveOnDamage(vh, dmg, target, this, {});
         }
 
-      } else if(siegeTown){
-        const t = siegeTown.town;
+      } else if(bestOption && bestOption.type==="siegeTown"){
+        const t = bestOption.target;
         const dx=t.x-vh.x, dy=t.y-vh.y;
         const d = Math.hypot(dx,dy)||1;
         const dirx=dx/d, diry=dy/d;
@@ -3883,22 +3932,19 @@ updateVillageHeroes(dt){
       const allianceId = s.allianceId;
       const enemyAlliances = this.getEnemyAlliancesFor(allianceId);
 
-      // Si coalition active : les soldats priorisent les démons et les villes démoniaques
-      let bestMonster=null, bestD=Infinity;
+      const combatOptions = [];
 
+      // Si coalition active : les soldats priorisent les démons et les villes démoniaques
       // 1) Priorité absolue : démons proches (toujours vraie)
       for(const m of this.monsters){
         const d = dist(s.x,s.y,m.x,m.y);
-        if(d<260 && d<bestD){
-          bestD = d;
-          bestMonster = m;
+        if(d<260){
+          const score = this.getCombatTargetScore(s, m, d, {isMonster:true});
+          combatOptions.push({type:"monster", target:m, d, score});
         }
       }
 
       // 2) En temps de guerre entre alliances humaines (hors coalition) : unités & villes ennemies
-      let bestEnemyUnit=null, bestEnemyDist=Infinity;
-      let siegeTown=null, siegeD=Infinity;
-
       if(!this.coalitionActive && enemyAlliances.length>0){
         // soldats ennemis
         for(const o of this.soldiers){
@@ -3906,9 +3952,9 @@ updateVillageHeroes(dt){
           if(o.dead || o.hp<=0) continue;
           if(!enemyAlliances.includes(o.allianceId)) continue;
           const d = dist(s.x,s.y,o.x,o.y);
-          if(d<260 && d<bestEnemyDist){
-            bestEnemyDist = d;
-            bestEnemyUnit = o;
+          if(d<260){
+            const score = this.getCombatTargetScore(s, o, d, {isEnemyUnit:true});
+            combatOptions.push({type:"enemyUnit", target:o, d, score});
           }
         }
         // héros de village ennemis
@@ -3917,40 +3963,44 @@ updateVillageHeroes(dt){
           if(!vh.town || vh.town.isDemonTown) continue;
           if(!enemyAlliances.includes(vh.town.allianceId)) continue;
           const d = dist(s.x,s.y,vh.x,vh.y);
-          if(d<260 && d<bestEnemyDist){
-            bestEnemyDist = d;
-            bestEnemyUnit = vh;
+          if(d<260){
+            const score = this.getCombatTargetScore(s, vh, d, {isEnemyUnit:true});
+            combatOptions.push({type:"enemyUnit", target:vh, d, score});
           }
         }
 
         // villes ennemies pour le siège
-        if(!bestMonster && !bestEnemyUnit){
-          for(const t of this.towns){
-            if(t.isDemonTown) continue;
-            if(!enemyAlliances.includes(t.allianceId)) continue;
-            const d = dist(s.x,s.y,t.x,t.y);
-            if(d<260 && d<siegeD){
-              siegeD = d;
-              siegeTown = t;
-            }
+        for(const t of this.towns){
+          if(t.isDemonTown) continue;
+          if(!enemyAlliances.includes(t.allianceId)) continue;
+          const d = dist(s.x,s.y,t.x,t.y);
+          if(d<260){
+            const score = this.getCombatTargetScore(s, t, d, {isSiegeTarget:true});
+            combatOptions.push({type:"siegeTown", target:t, d, score});
           }
         }
       }
 
       // 3) Si coalition active : cibler les villes démoniaques comme objectif de siège
-      if(this.coalitionActive && !bestMonster){
+      if(this.coalitionActive){
         for(const t of this.towns){
           if(!t.isDemonTown) continue;
           const d = dist(s.x,s.y,t.x,t.y);
-          if(d<260 && d<siegeD){
-            siegeD = d;
-            siegeTown = t;
+          if(d<260){
+            const score = this.getCombatTargetScore(s, t, d, {isSiegeTarget:true, isDemonTown:true});
+            combatOptions.push({type:"siegeTown", target:t, d, score});
           }
         }
       }
 
-      if(bestMonster){
-        const target = bestMonster;
+      combatOptions.sort((a,b)=>{
+        if(b.score === a.score) return a.d - b.d;
+        return b.score - a.score;
+      });
+      const bestOption = combatOptions[0];
+
+      if(bestOption && bestOption.type==="monster"){
+        const target = bestOption.target;
         const dx = target.x - s.x;
         const dy = target.y - s.y;
         const d = Math.hypot(dx,dy)||1;
@@ -3991,8 +4041,8 @@ updateVillageHeroes(dt){
           applyPassiveOnDamage(s, dmg, target, this, {});
         }
 
-      } else if(bestEnemyUnit){
-        const target = bestEnemyUnit;
+      } else if(bestOption && bestOption.type==="enemyUnit"){
+        const target = bestOption.target;
         const dx = target.x - s.x;
         const dy = target.y - s.y;
         const d = Math.hypot(dx,dy)||1;
@@ -4033,8 +4083,8 @@ updateVillageHeroes(dt){
         }
 
       } else {
-        if(siegeTown){
-          const t = siegeTown;
+        if(bestOption && bestOption.type==="siegeTown"){
+          const t = bestOption.target;
           const dx = t.x - s.x;
           const dy = t.y - s.y;
           const d = Math.hypot(dx,dy)||1;
@@ -5657,8 +5707,41 @@ drawBackground(camX,camY){
         ctx.fillText("Ville démon", s.x, s.y+r+21);
       } else if(p.allianceName){
         ctx.font="7px Helvetica";
-        ctx.fillStyle=p.allianceColor || "#cfd8dc";
-        ctx.fillText(p.allianceName, s.x, s.y+r+21);
+        const allianceColor = p.allianceColor || "#cfd8dc";
+        const atWar = p.allianceId!=null && this.getEnemyAlliancesFor(p.allianceId).length>0;
+        const label = p.allianceName;
+        const textMetrics = ctx.measureText(label);
+        const textY = s.y+r+21;
+        const paddingX = 5;
+        const paddingY = 2;
+        const warIconOffset = atWar ? 10 : 0;
+        const badgeW = textMetrics.width + paddingX*2 + warIconOffset;
+        const badgeH = 12;
+        const bx = s.x - badgeW/2;
+        const by = textY - badgeH + paddingY;
+
+        ctx.fillStyle="rgba(0,0,0,0.55)";
+        ctx.fillRect(bx,by,badgeW,badgeH);
+        ctx.strokeStyle=allianceColor;
+        ctx.lineWidth=1;
+        ctx.strokeRect(bx,by,badgeW,badgeH);
+
+        ctx.fillStyle=allianceColor;
+        ctx.fillText(label, s.x - (atWar?2:0), textY);
+
+        if(atWar){
+          const iconX = bx + badgeW - paddingX - 5;
+          const iconY = textY - 5;
+          ctx.strokeStyle = "#ffcdd2";
+          ctx.beginPath();
+          ctx.moveTo(iconX-3, iconY-3); ctx.lineTo(iconX+3, iconY+3);
+          ctx.moveTo(iconX+3, iconY-3); ctx.lineTo(iconX-3, iconY+3);
+          ctx.stroke();
+          ctx.fillStyle = "#ffcdd2";
+          ctx.beginPath();
+          ctx.arc(iconX, iconY+6, 1.8, 0, Math.PI*2);
+          ctx.fill();
+        }
       }
     } else if(p.type==="forest"){
       const r=22;
