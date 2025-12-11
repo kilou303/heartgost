@@ -42,10 +42,8 @@ const TILE_SIZE = 48;
 
 // Temps : 20 secondes IRL = 1 an en jeu
 const YEAR_DURATION = 20.0;      // 20s -> 1 an
-const AGING_PERIOD_YEARS = 50;   // tous les 50 ans
-const AGING_LEVEL_LOSS = 5;      // perte de 5 niveaux par vieillesse
 
-const MONSTER_LIMIT = 180; // limite globale de démons vivants
+const MONSTER_LIMIT = 600; // limite globale de démons vivants
 
 // Spawn démons : chaque nid (forêt ou zone) spawn toutes les 4s, max de démons configurables
 const NEST_SPAWN_INTERVAL = 4.0;
@@ -95,6 +93,14 @@ const ALLIANCE_WAR_MIN_DURATION = 140.0;
 const ALLIANCE_WAR_MAX_DURATION = 260.0;
 const ALLIANCE_WAR_CHECK_INTERVAL = 45.0;
 const ALLIANCE_WAR_BASE_CHANCE = 0.06;
+
+// Diplomatie & guerre
+const ALLIANCE_WAR_SUMMIT_INTERVAL = 55.0;       // fréquence des rencontres diplomatiques potentielles
+const ALLIANCE_NEUTRAL_SUMMIT_CHANCE = 0.65;     // chance de convoquer un sommet sur terrain neutre
+const ALLIANCE_TRUCE_BASE_CHANCE = 0.25;         // chance de signer une trêve lorsqu'une rencontre a lieu
+const ALLIANCE_PEACE_RELATION_BOOST = 14;        // gain de relation en cas de diplomatie réussie
+const ALLIANCE_DEFENSE_BONUS = 0.25;             // bonus défensif global (fortifications, milices)
+const ALLIANCE_ATTACK_PRESSURE_MULT = 0.35;      // influence de la pression militaire sur les sièges
 
 const ALLIANCE_TOWN_SIEGE_DAMAGE = 18;        // dégâts "par soldat/héros" sur les villes ennemies
 const ALLIANCE_TOWN_PILLAGE_GOLD_RATIO = 0.35;
@@ -470,6 +476,44 @@ function applyPassiveOnDamage(ch, dmg, target, game, opts={}){
         const heal = Math.max(1, Math.floor(dmg*ratio));
         ch.hp = clamp(ch.hp+heal,0,ch.maxHp);
       }
+    }
+  }
+
+  handleAllianceDiplomacy(dt){
+    this.allianceSummitTimer = (this.allianceSummitTimer || 0) + dt;
+    if(this.allianceSummitTimer < ALLIANCE_WAR_SUMMIT_INTERVAL) return;
+    this.allianceSummitTimer = 0;
+
+    const alliances = (this.alliances || []).filter(a=>a && a.towns && a.towns.length>0);
+    if(alliances.length < 2) return;
+
+    let targetA = null;
+    let targetB = null;
+    let worstRel = 15;
+    for(let i=0;i<alliances.length;i++){
+      const a = alliances[i];
+      for(let j=i+1;j<alliances.length;j++){
+        const b = alliances[j];
+        const rel = this.getAllianceRelation(a.id,b.id);
+        const atWar = this.areAlliancesAtWar(a.id,b.id);
+        const priorityScore = atWar ? -150 : rel;
+        if(priorityScore < worstRel){
+          worstRel = priorityScore;
+          targetA = a;
+          targetB = b;
+        }
+      }
+    }
+
+    if(!targetA || !targetB) return;
+
+    const key = this.getAlliancePairKey(targetA.id, targetB.id);
+    if(this.allianceDiplomacyCooldowns[key] && this.allianceDiplomacyCooldowns[key] > this.worldTime){
+      return; // encore sous cooldown diplomatique
+    }
+
+    if(Math.random() < ALLIANCE_NEUTRAL_SUMMIT_CHANCE){
+      this.launchAllianceSummit(targetA, targetB);
     }
   }
 
@@ -1399,6 +1443,7 @@ class Game {
 
     // Relations entre alliances (valeurs -100..100)
     this.allianceRelations = {};
+    this.allianceDiplomacyCooldowns = {};
 
     // Coalition globale contre les démons (alliances humaines unies)
     this.coalitionActive = false;
@@ -1449,11 +1494,11 @@ class Game {
     // Timer de portails dynamiques
     this.portalSpawnTimer = 0;
     this.allianceWarTimer = 0;
+    this.allianceSummitTimer = 0;
 
     // Temps du monde (années) : 20s = 1 an
     this.worldTime = 0;      // temps total en secondes
     this.worldYears = 0;     // années écoulées
-    this.nextAgingYear = 50; // première vieillesse à 50 ans
 
     this.createPois();
     this.buildTileMap();
@@ -1855,7 +1900,8 @@ class Game {
       a:a.id,
       b:b.id,
       remaining:duration,
-      active:true
+      active:true,
+      frontMomentum:0
     });
 
     // Une guerre dégrade fortement les relations
@@ -1864,7 +1910,111 @@ class Game {
     this.logEvent(`La guerre éclate entre ${a.name} et ${b.name} !`);
   }
 
-    updateCoalitionState(){
+  computeAllianceBattleProfile(allianceId){
+    const alliance = this.getAllianceById(allianceId);
+    if(!alliance){
+      return {attack:1, defense:1, diplomacy:0.5};
+    }
+
+    const pers = alliance.personality || {aggression:50,antiDemon:50,economy:50,honor:50};
+    const towns = alliance.towns || [];
+    const townCount = Math.max(1, towns.length);
+    const soldierCount = towns.reduce((sum,t)=>sum + ((t && t.soldiers)?t.soldiers.length:0),0);
+    const avgLevel = towns.reduce((sum,t)=>sum + (t && t.level ? t.level : 1),0) / townCount;
+    const goldBaseline = 700 * townCount;
+    const wealth = typeof alliance.gold === "number" ? alliance.gold : goldBaseline;
+    const economyFactor = clamp(wealth / Math.max(1, goldBaseline), 0.65, 1.5);
+
+    const attack = 1 + pers.aggression/120 + soldierCount*0.01 + Math.max(0, avgLevel-1)*0.015;
+    const defense = 1 + pers.honor/140 + (townCount-1)*0.05 + avgLevel*0.02 + economyFactor*0.05;
+    const diplomacy = clamp((120 - pers.aggression + pers.honor + pers.economy) / 260, 0.25, 1.35);
+
+    return {attack, defense, diplomacy};
+  }
+
+  getAlliancePairKey(aId,bId){
+    return [Math.min(aId,bId), Math.max(aId,bId)].join("-");
+  }
+
+  findNeutralMeetingSpot(){
+    const neutralPois = (this.pois||[]).filter(p=>p && p.type!=="town" && !p.isDemonTown);
+    if(neutralPois.length===0) return "un carrefour isolé";
+    const spot = randChoice(neutralPois);
+    if(spot.name) return spot.name;
+    switch(spot.type){
+      case "forest": return "une clairière";
+      case "zone": return "un ancien champ de bataille";
+      case "marsh": return "un marais brumeux";
+      default: return "un lieu neutre";
+    }
+  }
+
+  endAllianceWar(aId,bId, reason="La guerre prend fin par une entente fragile."){
+    let ended=false;
+    for(const war of this.allianceWars){
+      if(!war.active) continue;
+      if((war.a===aId && war.b===bId) || (war.a===bId && war.b===aId)){
+        war.active=false;
+        ended=true;
+      }
+    }
+    if(ended){
+      this.logEvent(reason);
+    }
+  }
+
+  refreshWarFront(war, dt){
+    if(!war || !war.active) return;
+    const profileA = this.computeAllianceBattleProfile(war.a);
+    const profileB = this.computeAllianceBattleProfile(war.b);
+    const pressureA = profileA.attack / Math.max(0.6, profileB.defense);
+    const pressureB = profileB.attack / Math.max(0.6, profileA.defense);
+    const delta = (pressureA - pressureB) * dt * 0.05;
+    war.frontMomentum = clamp((war.frontMomentum || 0) + delta, -1.5, 1.5);
+
+    // l'usure de la guerre dégrade doucement les relations
+    const tension = (pressureA + pressureB) * 0.01 * dt;
+    this.adjustAllianceRelation(war.a, war.b, -tension);
+  }
+
+  getWarPressure(attackerAllianceId, defenderAllianceId){
+    const war = this.allianceWars.find(w=>w.active && ((w.a===attackerAllianceId && w.b===defenderAllianceId) || (w.a===defenderAllianceId && w.b===attackerAllianceId)));
+    if(!war) return 1.0;
+    const dir = war.a === attackerAllianceId ? 1 : -1;
+    const momentum = war.frontMomentum || 0;
+    return clamp(1 + dir * momentum * ALLIANCE_ATTACK_PRESSURE_MULT, 0.55, 1.75);
+  }
+
+  launchAllianceSummit(a,b){
+    if(!a || !b) return;
+    const key = this.getAlliancePairKey(a.id,b.id);
+    this.allianceDiplomacyCooldowns[key] = this.worldTime + ALLIANCE_WAR_SUMMIT_INTERVAL*0.8;
+
+    const spot = this.findNeutralMeetingSpot();
+    this.logEvent(`Les chefs de ${a.name} et ${b.name} se rencontrent en terrain neutre (${spot}) pour négocier.`);
+
+    const profileA = this.computeAllianceBattleProfile(a.id);
+    const profileB = this.computeAllianceBattleProfile(b.id);
+    const diplomacyScore = (profileA.diplomacy + profileB.diplomacy)/2;
+    const relation = this.getAllianceRelation(a.id,b.id);
+
+    const boost = Math.max(6, Math.floor(ALLIANCE_PEACE_RELATION_BOOST * diplomacyScore));
+    this.adjustAllianceRelation(a.id,b.id, boost);
+
+    if(this.areAlliancesAtWar(a.id,b.id)){
+      const truceChance = ALLIANCE_TRUCE_BASE_CHANCE * diplomacyScore * (relation < 0 ? 1.3 : 1.0);
+      if(Math.random() < truceChance){
+        this.endAllianceWar(a.id,b.id, `${a.name} et ${b.name} signent une trêve après des pourparlers en terrain neutre.`);
+        return;
+      }
+      this.logEvent("Les discussions échouent, mais une accalmie règne temporairement.");
+    } else if(relation < -5 && Math.random() < diplomacyScore){
+      this.logEvent(`Un pacte de non-agression est conclu entre ${a.name} et ${b.name}.`);
+      this.adjustAllianceRelation(a.id,b.id, randInt(4,9));
+    }
+  }
+
+  updateCoalitionState(){
     // Compte les villes démoniaques encore actives
     const demonTowns = (this.towns && this.towns.length>0 ? this.towns : this.pois.filter(p=>p.type==="town")).filter(t=>t.isDemonTown);
     const wasActive = this.coalitionActive;
@@ -1890,71 +2040,6 @@ class Game {
       }
     } else if(!this.coalitionActive && wasActive){
       this.logEvent("La coalition contre les démons se disperse peu à peu.");
-    }
-  }
-
-  applyAging(){
-    // Vieillesse : tous les AGING_PERIOD_YEARS, les personnages héros perdent AGING_LEVEL_LOSS niveaux
-    const year = this.worldYears || 0;
-    this.logEvent(`La vieillesse frappe le monde à l'année ${year}. Les héros perdent ${AGING_LEVEL_LOSS} niveaux.`);
-
-    // Héros principal
-    const hero = this.hero;
-    if(hero && hero.level){
-      const old = hero.level;
-      hero.level = Math.max(1, hero.level - AGING_LEVEL_LOSS);
-      hero.xp = 0;
-      if(hero.xpToNext){
-        hero.xpToNext = Math.max(10, Math.floor(hero.xpToNext*0.8));
-      }
-      this.logEvent(`${hero.name} passe de Niv ${old} à Niv ${hero.level} à cause de la vieillesse.`);
-    }
-
-    // Héros de village
-    if(this.villageHeroes){
-      for(const vh of this.villageHeroes){
-        if(!vh || vh.dead) continue;
-        if(vh.level){
-          const old = vh.level;
-          vh.level = Math.max(1, vh.level - AGING_LEVEL_LOSS);
-          vh.xp = 0;
-          if(vh.xpToNext){
-            vh.xpToNext = Math.max(8, Math.floor(vh.xpToNext*0.85));
-          }
-          this.logEvent(`${vh.name} vieillit : Niv ${old} -> ${vh.level}.`);
-        }
-      }
-    }
-
-    // Soldats d'alliance (ceux encore vivants)
-    if(this.soldiers){
-      for(const s of this.soldiers){
-        if(!s || s.dead) continue;
-        if(s.level){
-          const old = s.level;
-          s.level = Math.max(1, s.level - AGING_LEVEL_LOSS);
-          s.xp = 0;
-          if(s.xpToNext){
-            s.xpToNext = Math.max(8, Math.floor(s.xpToNext*0.85));
-          }
-        }
-      }
-    }
-
-    // Vagabonds : même traitement que les autres héros
-    if(this.vagabonds){
-      for(const v of this.vagabonds){
-        if(!v || v.dead) continue;
-        if(v.level){
-          const old = v.level;
-          v.level = Math.max(1, v.level - AGING_LEVEL_LOSS);
-          v.xp = 0;
-          if(v.xpToNext){
-            v.xpToNext = Math.max(8, Math.floor(v.xpToNext*0.85));
-          }
-          this.logEvent(`Le vagabond ${v.name} vieillit : Niv ${old} -> ${v.level}.`);
-        }
-      }
     }
   }
 
@@ -2032,6 +2117,7 @@ updateAllianceWars(dt){
     // décrémente les guerres existantes
     for(const war of this.allianceWars){
       if(!war.active) continue;
+      this.refreshWarFront(war, dt);
       war.remaining -= dt;
       if(war.remaining <= 0){
         war.active = false;
@@ -2044,6 +2130,7 @@ updateAllianceWars(dt){
         }
       }
     }
+    this.handleAllianceDiplomacy(dt);
     this.allianceWars = this.allianceWars.filter(w=>w.active);
 
     // de temps en temps, nouvelle guerre (sauf si coalition active contre les démons)
@@ -2107,7 +2194,13 @@ updateAllianceWars(dt){
     if(attackerAllianceId == null) return;
     if(!this.areAlliancesAtWar(attackerAllianceId, town.allianceId)) return;
 
-    const dps = ALLIANCE_TOWN_SIEGE_DAMAGE * factor;
+    const attackProfile = this.computeAllianceBattleProfile(attackerAllianceId);
+    const defenseProfile = this.computeAllianceBattleProfile(town.allianceId);
+    const warPressure = this.getWarPressure(attackerAllianceId, town.allianceId);
+    const defenseBoost = 1 + ALLIANCE_DEFENSE_BONUS * Math.max(0, defenseProfile.defense);
+    const offenseBoost = 1 + ALLIANCE_ATTACK_PRESSURE_MULT * Math.max(0, attackProfile.attack-1);
+
+    const dps = (ALLIANCE_TOWN_SIEGE_DAMAGE * factor * offenseBoost * warPressure) / defenseBoost;
     const dmg = dps * dt;
     town.hp = clamp(town.hp - dmg, 0, town.maxHp);
 
@@ -2630,14 +2723,7 @@ spawnNeutral(){
 
     // Avancée du temps du monde
     this.worldTime += dt;
-    const yearsBefore = this.worldYears;
     this.worldYears = Math.floor(this.worldTime / YEAR_DURATION);
-
-    // Vieillesse : tous les 50 ans, les héros perdent des niveaux
-    if(this.worldYears >= this.nextAgingYear){
-      this.applyAging();
-      this.nextAgingYear += AGING_PERIOD_YEARS;
-    }
 
     // Spawn démons par nid (forêt/zone)
     for(const nest of this.demonNests){
