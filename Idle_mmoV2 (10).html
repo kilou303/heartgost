@@ -6,27 +6,189 @@
   <style>
     body {
       margin: 0;
-      background: #050811;
-      color: white;
-      font-family: sans-serif;
+      background: radial-gradient(circle at 20% 20%, #111832, #050811 55%);
+      color: #f8fafc;
+      font-family: "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
       display: flex;
       justify-content: center;
       align-items: center;
       height: 100vh;
+      overflow: hidden;
     }
     #container {
-      box-shadow: 0 0 20px rgba(0,0,0,0.8);
-      border: 2px solid #333;
+      position: relative;
+      box-shadow: 0 20px 40px rgba(0,0,0,0.55);
+      border: 1px solid rgba(255,255,255,0.06);
+      border-radius: 14px;
+      overflow: hidden;
+      backdrop-filter: blur(4px);
     }
     canvas {
       display: block;
-      background: #111122;
+      background: linear-gradient(180deg, #0c1023 0%, #080a16 100%);
     }
+    #hud-overlay {
+      pointer-events: none;
+      position: absolute;
+      inset: 0;
+      padding: 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      box-sizing: border-box;
+    }
+    .topbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: linear-gradient(90deg, rgba(59,130,246,0.18), rgba(14,165,233,0.12));
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 12px;
+      padding: 10px 14px;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.35);
+      color: #e2e8f0;
+    }
+    .brand {
+      font-weight: 700;
+      letter-spacing: 0.5px;
+      color: #c7d2fe;
+      text-transform: uppercase;
+    }
+    .pill-row {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .pill {
+      padding: 6px 10px;
+      border-radius: 999px;
+      background: rgba(15,23,42,0.55);
+      border: 1px solid rgba(255,255,255,0.05);
+      color: #cbd5e1;
+      font-size: 12px;
+    }
+    .hud-grid {
+      display: grid;
+      grid-template-columns: 1.2fr 1fr;
+      gap: 10px;
+      pointer-events: none;
+    }
+    .hud-card {
+      background: rgba(12,18,34,0.76);
+      border: 1px solid rgba(255,255,255,0.06);
+      border-radius: 12px;
+      padding: 12px;
+      box-shadow: 0 12px 28px rgba(0,0,0,0.35);
+      pointer-events: auto;
+    }
+    .hud-title {
+      font-size: 13px;
+      text-transform: uppercase;
+      letter-spacing: 0.3px;
+      color: #94a3b8;
+      margin-bottom: 8px;
+    }
+    .stat-row {
+      display: grid;
+      grid-template-columns: 110px 1fr 60px;
+      gap: 8px;
+      align-items: center;
+      margin-bottom: 8px;
+    }
+    .stat-label { color: #e2e8f0; font-size: 12px; }
+    .stat-value { color: #a5b4fc; font-size: 12px; text-align: right; }
+    .bar {
+      position: relative;
+      background: rgba(148,163,184,0.16);
+      height: 10px;
+      border-radius: 999px;
+      overflow: hidden;
+      border: 1px solid rgba(255,255,255,0.04);
+    }
+    .bar-fill {
+      position: absolute;
+      inset: 0;
+      width: 0;
+      border-radius: inherit;
+      transition: width 0.2s ease;
+    }
+    .bar-fill.hp { background: linear-gradient(90deg,#f87171,#f59e0b); }
+    .bar-fill.mp { background: linear-gradient(90deg,#60a5fa,#a78bfa); }
+    .bar-fill.xp { background: linear-gradient(90deg,#a78bfa,#38bdf8); }
+    .resource-row { display:flex; gap:10px; flex-wrap:wrap; margin-bottom:8px; }
+    .resource {
+      background: rgba(15,23,42,0.7);
+      border: 1px solid rgba(255,255,255,0.05);
+      padding: 6px 10px;
+      border-radius: 10px;
+      color: #cbd5e1;
+      font-size: 12px;
+    }
+    .quest-box {
+      background: linear-gradient(135deg, rgba(234,179,8,0.14), rgba(250,204,21,0.08));
+      border: 1px solid rgba(250,204,21,0.25);
+      padding: 10px;
+      border-radius: 10px;
+      color: #fde68a;
+      font-size: 12px;
+      line-height: 1.5;
+    }
+    .log-list {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      font-size: 12px;
+      color: #e2e8f0;
+      max-height: 120px;
+      overflow: hidden;
+    }
+    .log-list li { opacity: 0.82; }
+    .log-list li:last-child { color: #facc15; opacity: 1; }
   </style>
 </head>
 <body>
 <div id="container">
   <canvas id="game" width="900" height="700"></canvas>
+  <div id="hud-overlay">
+    <div class="topbar">
+      <div class="brand">Roguelite – Salon MMO</div>
+      <div class="pill-row">
+        <div class="pill" id="hud-year">Année 0</div>
+        <div class="pill" id="hud-location">Coordonnées : -- / --</div>
+        <div class="pill" id="hud-threat">Conflits : --</div>
+      </div>
+    </div>
+    <div class="hud-grid">
+      <div class="hud-card">
+        <div class="hud-title">Profil du héros</div>
+        <div class="resource-row" id="hud-identity"></div>
+        <div class="stat-row">
+          <div class="stat-label">Points de vie</div>
+          <div class="bar"><div class="bar-fill hp" id="hud-hp"></div></div>
+          <div class="stat-value" id="hud-hp-text">--</div>
+        </div>
+        <div class="stat-row">
+          <div class="stat-label">Mana</div>
+          <div class="bar"><div class="bar-fill mp" id="hud-mp"></div></div>
+          <div class="stat-value" id="hud-mp-text">--</div>
+        </div>
+        <div class="stat-row">
+          <div class="stat-label">Expérience</div>
+          <div class="bar"><div class="bar-fill xp" id="hud-xp"></div></div>
+          <div class="stat-value" id="hud-xp-text">--</div>
+        </div>
+        <div class="resource-row" id="hud-resources"></div>
+        <div class="quest-box" id="hud-quest">Aucune quête active. Explorez le monde pour lancer une mission.</div>
+      </div>
+      <div class="hud-card">
+        <div class="hud-title">Ambiance MMO</div>
+        <ul class="log-list" id="hud-log"></ul>
+      </div>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -6706,6 +6868,112 @@ drawBackground(camX,camY){
 
 const canvas = document.getElementById("game");
 const game = new Game(canvas);
+
+// ----------- HUD MMO (overlay DOM) -----------
+const hud = {
+  year: document.getElementById("hud-year"),
+  location: document.getElementById("hud-location"),
+  threat: document.getElementById("hud-threat"),
+  identity: document.getElementById("hud-identity"),
+  hp: document.getElementById("hud-hp"),
+  hpText: document.getElementById("hud-hp-text"),
+  mp: document.getElementById("hud-mp"),
+  mpText: document.getElementById("hud-mp-text"),
+  xp: document.getElementById("hud-xp"),
+  xpText: document.getElementById("hud-xp-text"),
+  resources: document.getElementById("hud-resources"),
+  quest: document.getElementById("hud-quest"),
+  log: document.getElementById("hud-log"),
+};
+
+function setText(el, text){ if(el) el.textContent = text; }
+
+function renderChips(container, chips){
+  if(!container) return;
+  container.innerHTML = "";
+  chips.filter(Boolean).forEach(text=>{
+    const div=document.createElement("div");
+    div.className="resource";
+    div.textContent=text;
+    container.appendChild(div);
+  });
+}
+
+function describeQuest(game){
+  const q = game.currentQuest;
+  if(!q) return "Aucune quête active. Explorez le monde pour lancer une mission.";
+  if(q.type==="destroyZone"){
+    const lvl = q.area && q.area.level ? q.area.level : game.hero.level;
+    return `Détruisez un portail niv ${lvl} pour ${q.reward} or.`;
+  }
+  if(q.type==="rescueTown"){
+    const townName = q.area ? q.area.name : "une ville";
+    return `Sauvez ${townName} (${game.questProgress}/${q.targetCount}). Récompense : ${q.reward} or.`;
+  }
+  if(q.type==="supplyTown"){
+    const fromName = q.from ? q.from.name : "une ville";
+    const toName = q.area ? q.area.name : "une autre ville";
+    return `Convoyez des vivres de ${fromName} vers ${toName}. Récompense : ${q.reward} or.`;
+  }
+  const areaName = q.area ? (q.area.type==="zone" ? "un portail" : "une forêt") : "la zone";
+  return `Éliminez ${q.targetCount} démons près de ${areaName} (${game.questProgress}/${q.targetCount}). Récompense : ${q.reward} or.`;
+}
+
+function updateHudOverlay(){
+  const hero = game.hero;
+  if(!hero || !hud.hp) return;
+
+  // Topbar
+  setText(hud.year, `Année ${game.worldYears || 0}`);
+  const px = Math.floor(hero.x || 0);
+  const py = Math.floor(hero.y || 0);
+  setText(hud.location, `Coordonnées : ${px} / ${py}`);
+  const warCount = (game.allianceWars || []).length;
+  const demonCount = (game.monsters || []).length;
+  setText(hud.threat, `Conflits : ${warCount} | Démons : ${demonCount}`);
+
+  // Identity chips
+  const passiveName = hero.passive && hero.passive.name ? hero.passive.name : "Passif inconnu";
+  renderChips(hud.identity, [hero.name, `Niveau ${hero.level}`, passiveName]);
+
+  // Bars
+  const hpRatio = hero.maxHp>0 ? clamp(hero.hp/hero.maxHp,0,1) : 0;
+  hud.hp.style.width = `${(hpRatio*100).toFixed(1)}%`;
+  setText(hud.hpText, `${Math.floor(hero.hp)}/${hero.maxHp}`);
+
+  const mpRatio = hero.maxMp>0 ? clamp(hero.mp/hero.maxMp,0,1) : 0;
+  hud.mp.style.width = `${(mpRatio*100).toFixed(1)}%`;
+  setText(hud.mpText, `${Math.floor(hero.mp)}/${hero.maxMp}`);
+
+  const xpRatio = hero.xpToNext>0 ? clamp(hero.xp/hero.xpToNext,0,1) : 0;
+  hud.xp.style.width = `${(xpRatio*100).toFixed(1)}%`;
+  setText(hud.xpText, `${Math.floor(xpRatio*100)}%`);
+
+  // Resources
+  const fragments = hero.fragmentStableCount || 0;
+  const mana = hero.manaShardsAbsorbed || 0;
+  renderChips(hud.resources,[
+    `Or : ${hero.gold}`,
+    `Potions : ${hero.potionsCount}`,
+    `Sac : ${hero.backpack.length}`,
+    `Fragments : ${fragments}`,
+    `Essence : ${mana}`
+  ]);
+
+  // Quest & log
+  setText(hud.quest, describeQuest(game));
+  if(hud.log){
+    hud.log.innerHTML = "";
+    const messages = (game.eventLog || []).slice(-6);
+    messages.forEach(msg=>{
+      const li=document.createElement("li");
+      li.textContent = `• ${msg}`;
+      hud.log.appendChild(li);
+    });
+  }
+}
+
+setInterval(updateHudOverlay, 400);
 
 function loop(){
   game.step();
