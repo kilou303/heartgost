@@ -75,6 +75,8 @@ const PORTAL_MIN_LEVEL_FOR_AUTO = 9;   // à partir du niveau 9, on force un por
 const QUEST_REWARD_MIN = 50;
 const QUEST_REWARD_MAX = 300;
 const QUEST_KILL_RADIUS = 280; // rayon autour de la zone/forêt ciblée
+const RUINS_COUNT = 10;
+const OUTPOST_COUNT = 7;
 
 // Villes & alliances
 const TOWN_BASE_MAX_HP = 800;
@@ -94,6 +96,9 @@ const ALLIANCE_WAR_MIN_DURATION = 140.0;
 const ALLIANCE_WAR_MAX_DURATION = 260.0;
 const ALLIANCE_WAR_CHECK_INTERVAL = 45.0;
 const ALLIANCE_WAR_BASE_CHANCE = 0.06;
+const ALLIANCE_SKIRMISH_CHECK_INTERVAL = 38.0;
+const ALLIANCE_SKIRMISH_LIFETIME = 80.0;
+const ALLIANCE_SKIRMISH_SIZE = 2;
 
 // Diplomatie & guerre
 const ALLIANCE_WAR_SUMMIT_INTERVAL = 55.0;       // fréquence des rencontres diplomatiques potentielles
@@ -1402,6 +1407,7 @@ class Game {
     this.caravans = [];
     this.caravanTimer = 0;
     this.pois = [];
+    this.skirmishTimer = 0;
     this.towns = [];
     this.alliances = [];
     this.allianceWars = [];
@@ -1629,6 +1635,53 @@ class Game {
       zonesCreated++;
     }
 
+    // Ruines anciennes à explorer
+    let ruinsCreated = 0;
+    let ruinAttempts = 0;
+    while(ruinsCreated < RUINS_COUNT && ruinAttempts < 500){
+      ruinAttempts++;
+      const rx = 180 + Math.random()*(WORLD_WIDTH-360);
+      const ry = 180 + Math.random()*(WORLD_HEIGHT-360);
+      let tooClose = false;
+      for(const tw of towns){
+        if(dist(rx,ry,tw.x,tw.y)<240){ tooClose = true; break; }
+      }
+      if(tooClose) continue;
+      for(const ex of this.pois){
+        if(dist(rx,ry,ex.x,ex.y)<140){ tooClose = true; break; }
+      }
+      if(tooClose) continue;
+      this.pois.push({type:"ruin", x:rx, y:ry, looted:false});
+      ruinsCreated++;
+    }
+
+    // Avant-postes neutres le long des routes pour encourager les interactions
+    let outpostsCreated = 0;
+    let outpostTries = 0;
+    while(outpostsCreated < OUTPOST_COUNT && outpostTries < 600){
+      outpostTries++;
+      if(this.roads.length===0) break;
+      const rd = this.roads[Math.floor(Math.random()*this.roads.length)];
+      const t = 0.25 + Math.random()*0.5;
+      const baseX = rd.ax + (rd.bx-rd.ax)*t;
+      const baseY = rd.ay + (rd.by-rd.ay)*t;
+      const ang = Math.random()*Math.PI*2;
+      const offset = 60 + Math.random()*70;
+      const ox = baseX + Math.cos(ang)*offset;
+      const oy = baseY + Math.sin(ang)*offset;
+      let blocked=false;
+      for(const tw of towns){
+        if(dist(ox,oy,tw.x,tw.y)<180){ blocked=true; break; }
+      }
+      if(blocked) continue;
+      for(const ex of this.pois){
+        if(dist(ox,oy,ex.x,ex.y)<120){ blocked=true; break; }
+      }
+      if(blocked) continue;
+      this.pois.push({type:"outpost", x:ox, y:oy, supplies:0, allianceId:null, allianceName:null});
+      outpostsCreated++;
+    }
+
     // Placement du héros près de la ville la plus centrale (pour le tout premier héros)
     if(towns.length>0){
       const centerTown = towns.reduce((best,t)=>{
@@ -1731,6 +1784,23 @@ class Game {
       town.allianceColor = alliance.color;
       alliance.towns.push(town);
       idx++;
+    }
+
+    // Relie les avant-postes neutres à l'alliance la plus proche
+    for(const poi of this.pois){
+      if(poi.type!=="outpost") continue;
+      let nearestTown=null, bestD=Infinity;
+      for(const tw of this.towns){
+        if(tw.isDemonTown) continue;
+        const d = dist(poi.x,poi.y,tw.x,tw.y);
+        if(d<bestD){
+          bestD=d; nearestTown=tw;
+        }
+      }
+      if(nearestTown){
+        poi.allianceId = nearestTown.allianceId;
+        poi.allianceName = nearestTown.allianceName;
+      }
     }
   }
 
@@ -2145,6 +2215,73 @@ class Game {
     if(Math.random() < ALLIANCE_NEUTRAL_SUMMIT_CHANCE){
       this.launchAllianceSummit(targetA, targetB);
     }
+  }
+
+  spawnAllianceSkirmish(){
+    if(!this.allianceWars || this.allianceWars.length===0) return;
+    const activeWars = this.allianceWars.filter(w=>w.active);
+    if(activeWars.length===0) return;
+
+    // Limite le nombre d'escarmouches simultanées
+    const existingBattlefields = this.pois.filter(p=>p.type==="battlefield");
+    if(existingBattlefields.length >= 4) return;
+
+    const war = randChoice(activeWars);
+    const allianceA = this.getAllianceById(war.a);
+    const allianceB = this.getAllianceById(war.b);
+    if(!allianceA || !allianceB) return;
+
+    const townsA = (allianceA.towns||[]).filter(t=>t && !t.isDemonTown);
+    const townsB = (allianceB.towns||[]).filter(t=>t && !t.isDemonTown);
+    if(townsA.length===0 || townsB.length===0) return;
+
+    const townA = randChoice(townsA);
+    const townB = randChoice(townsB);
+    const midX = (townA.x + townB.x)/2 + (Math.random()*60-30);
+    const midY = (townA.y + townB.y)/2 + (Math.random()*60-30);
+
+    const battlefield = {
+      type:"battlefield",
+      x:midX,
+      y:midY,
+      ttl:ALLIANCE_SKIRMISH_LIFETIME,
+      alliances:[allianceA.id, allianceB.id],
+      label:`Front ${townA.name} / ${townB.name}`,
+      looted:false
+    };
+    this.pois.push(battlefield);
+
+    // Détache quelques soldats pour animer le front
+    for(let i=0;i<ALLIANCE_SKIRMISH_SIZE;i++){
+      const sa = this.spawnTownSoldier(townA);
+      sa.state = "expedition";
+      sa.expeditionTarget = battlefield;
+      sa.x = midX + Math.random()*28-14;
+      sa.y = midY + Math.random()*28-14;
+
+      const sb = this.spawnTownSoldier(townB);
+      sb.state = "expedition";
+      sb.expeditionTarget = battlefield;
+      sb.x = midX + Math.random()*28-14;
+      sb.y = midY + Math.random()*28-14;
+    }
+
+    this.logEvent(`Une escarmouche éclate entre ${allianceA.name} et ${allianceB.name} près de ${townA.name}.`);
+  }
+
+  updateAllianceSkirmishes(dt){
+    this.skirmishTimer = (this.skirmishTimer || 0) + dt;
+    if(this.skirmishTimer >= ALLIANCE_SKIRMISH_CHECK_INTERVAL){
+      this.skirmishTimer = 0;
+      this.spawnAllianceSkirmish();
+    }
+
+    // Durée de vie limitée des champs de bataille
+    this.pois = this.pois.filter(poi=>{
+      if(poi.type!=="battlefield") return true;
+      poi.ttl = (poi.ttl||ALLIANCE_SKIRMISH_LIFETIME) - dt;
+      return poi.ttl>0;
+    });
   }
 
   updateAllianceWars(dt){
@@ -2891,6 +3028,7 @@ spawnNeutral(){
 
     // Guerres d'alliances
     this.updateAllianceWars(dt);
+    this.updateAllianceSkirmishes(dt);
 
     hero.update(dt,this);
     // Le héros peut attaquer directement une ville démoniaque pour une quête de sauvetage
@@ -5227,6 +5365,49 @@ updateVillageHeroes(dt){
       }
       return true;
     });
+
+    // Sites spéciaux (ruines / avant-postes / champs de bataille)
+    for(const poi of this.pois){
+      const d = dist(hero.x,hero.y,poi.x,poi.y);
+      if(poi.type==="ruin" && !poi.looted && d<24){
+        const goldGain = randInt(30,90);
+        const xpGain = randInt(10,22);
+        hero.gold += goldGain;
+        hero.gainXp(xpGain);
+        poi.looted = true;
+        this.logEvent(`Les ruines cachent un trésor : +${goldGain} or, +${xpGain} XP pour le héros.`);
+      }
+
+      if(poi.type==="outpost" && d<36){
+        const ready = !poi.lastRest || (this.worldTime - poi.lastRest > 8);
+        if(ready){
+          poi.lastRest = this.worldTime;
+          hero.hp = Math.min(hero.maxHp, hero.hp + hero.maxHp*0.35);
+          hero.mp = hero.maxMp;
+          if(Math.random()<0.35){
+            hero.potionsCount += 1;
+          }
+          if(poi.allianceId!=null){
+            const ally = this.getAllianceById(poi.allianceId);
+            if(ally){
+              const town = ally.towns ? ally.towns[0] : null;
+              if(town){
+                town.storedPotions = (town.storedPotions||0) + 1;
+              }
+            }
+          }
+          this.logEvent(`Repos à l'avant-poste : le héros se ravitaille et repart avec des ressources fraîches.`);
+        }
+      }
+
+      if(poi.type==="battlefield" && !poi.looted && d<28 && (poi.ttl||0) < ALLIANCE_SKIRMISH_LIFETIME*0.5){
+        const goldGain = randInt(20,70);
+        hero.gold += goldGain;
+        hero.gainXp(randInt(12,26));
+        poi.looted = true;
+        this.logEvent(`Le héros fouille un champ de bataille récent et récupère ${goldGain} or.`);
+      }
+    }
   }
 
   // ---------- PORTAILS (zones) EN VAGUES ----------
@@ -5802,6 +5983,61 @@ drawBackground(camX,camY){
       ctx.fillStyle="#ede7f6";
       ctx.textAlign="center";
       ctx.fillText(`Portail Lv ${lvl}`,s.x,s.y+r+12);
+    } else if(p.type==="ruin"){
+      const r=14;
+      ctx.fillStyle="#5d4037";
+      ctx.beginPath();
+      ctx.arc(s.x,s.y,r,0,Math.PI*2);
+      ctx.fill();
+      ctx.strokeStyle="#3e2723";
+      ctx.lineWidth=2;
+      ctx.stroke();
+      ctx.fillStyle="#d7ccc8";
+      ctx.font="8px Helvetica";
+      ctx.textAlign="center";
+      ctx.fillText("Ruines", s.x, s.y+r+11);
+    } else if(p.type==="outpost"){
+      const r=12;
+      ctx.fillStyle="#795548";
+      ctx.beginPath();
+      ctx.rect(s.x-r,s.y-r,r*2,r*1.4);
+      ctx.fill();
+      ctx.strokeStyle="#3e2723";
+      ctx.strokeRect(s.x-r,s.y-r,r*2,r*1.4);
+      const flagColor = p.allianceId!=null ? (this.getAllianceById(p.allianceId)?.color || "#ffe082") : "#ffe082";
+      ctx.fillStyle=flagColor;
+      ctx.beginPath();
+      ctx.moveTo(s.x+r-4, s.y-r);
+      ctx.lineTo(s.x+r+8, s.y-r+5);
+      ctx.lineTo(s.x+r-4, s.y-r+10);
+      ctx.closePath();
+      ctx.fill();
+      ctx.strokeStyle="#212121";
+      ctx.stroke();
+      ctx.font="8px Helvetica";
+      ctx.fillStyle="#ffecb3";
+      const label = p.allianceName ? `Avant-poste (${p.allianceName})` : "Avant-poste";
+      ctx.textAlign="center";
+      ctx.fillText(label, s.x, s.y+r+12);
+    } else if(p.type==="battlefield"){
+      const r=16;
+      ctx.beginPath();
+      ctx.arc(s.x,s.y,r,0,Math.PI*2);
+      ctx.fillStyle="rgba(183,28,28,0.45)";
+      ctx.fill();
+      ctx.strokeStyle="#ef9a9a";
+      ctx.lineWidth=2;
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(s.x-8,s.y-2); ctx.lineTo(s.x+8,s.y+6);
+      ctx.moveTo(s.x+8,s.y-2); ctx.lineTo(s.x-8,s.y+6);
+      ctx.strokeStyle="#ffcdd2";
+      ctx.stroke();
+      ctx.font="8px Helvetica";
+      ctx.fillStyle="#ffebee";
+      ctx.textAlign="center";
+      const label = p.label || "Champ de bataille";
+      ctx.fillText(label, s.x, s.y+r+12);
     }
 
     ctx.restore();
