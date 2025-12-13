@@ -455,6 +455,7 @@ const PASSIVE_DEFS = [
 
 function clamp(v, min, max){ return v < min ? min : (v > max ? max : v); }
 function dist(x1,y1,x2,y2){ return Math.hypot(x2-x1,y2-y1); }
+function distSq(x1,y1,x2,y2){ const dx=x2-x1, dy=y2-y1; return dx*dx+dy*dy; }
 function randInt(a,b){ return a + Math.floor(Math.random()*(b-a+1)); }
 function randChoice(arr){ return arr[Math.floor(Math.random()*arr.length)]; }
 
@@ -4439,41 +4440,41 @@ updateVillageHeroes(dt){
   updateMonsters(dt){
     const hero=this.hero;
     const toRemove=[];
+    const detectRange = 260;
+    const detectRangeSq = detectRange*detectRange;
     for(const m of this.monsters){
       // regen légère
       m.hp = clamp(m.hp + m.maxHp*MONSTER_HP_REGEN_RATIO*dt,0,m.maxHp);
 
       // trouver cible : héros, héros de ville, neutres
-      let bestTarget = {obj:hero,dist:dist(m.x,m.y,hero.x,hero.y),type:"hero"};
+      const heroDistSq = distSq(m.x,m.y,hero.x,hero.y);
+      let bestTarget = {obj:hero,type:"hero"};
+      let bestDistSq = heroDistSq;
+
+      const tryCandidate = (obj,type,distSquared)=>{
+        if(distSquared < bestDistSq && distSquared <= detectRangeSq){
+          bestTarget = {obj,type};
+          bestDistSq = distSquared;
+        }
+      };
+
       for(const vh of this.villageHeroes){
         if(!vh.isAlive()) continue;
-        const d=dist(m.x,m.y,vh.x,vh.y);
-        if(d<bestTarget.dist){
-          bestTarget={obj:vh,dist:d,type:"villageHero"};
-        }
+        tryCandidate(vh,"villageHero", distSq(m.x,m.y,vh.x,vh.y));
       }
       if(this.vagabonds){
         for(const v of this.vagabonds){
           if(!v || !v.isAlive || !v.isAlive()) continue;
-          const d=dist(m.x,m.y,v.x,v.y);
-          if(d<bestTarget.dist){
-            bestTarget={obj:v,dist:d,type:"vagabond"};
-          }
+          tryCandidate(v,"vagabond", distSq(m.x,m.y,v.x,v.y));
         }
       }
       for(const n of this.neutrals){
-        const d=dist(m.x,m.y,n.x,n.y);
-        if(d<bestTarget.dist){
-          bestTarget={obj:n,dist:d,type:"neutral"};
-        }
+        tryCandidate(n,"neutral", distSq(m.x,m.y,n.x,n.y));
       }
       // cibler aussi les soldats (défense des villes / guerres)
       for(const s of this.soldiers){
         if(!s || s.dead || s.hp<=0) continue;
-        const d=dist(m.x,m.y,s.x,s.y);
-        if(d<bestTarget.dist){
-          bestTarget={obj:s,dist:d,type:"soldier"};
-        }
+        tryCandidate(s,"soldier", distSq(m.x,m.y,s.x,s.y));
       }
 
       // ---------- MODE "GARDIEN DE PORTAIL" ----------
@@ -4485,26 +4486,27 @@ updateVillageHeroes(dt){
         const leashRadius  = 330;
 
         if(distHeroCenter > defendRadius){
-          bestTarget = {obj:{x:cz.x,y:cz.y}, dist: distMonsterCenter, type:"portalCenter"};
+          bestTarget = {obj:{x:cz.x,y:cz.y}, type:"portalCenter"};
+          bestDistSq = distMonsterCenter*distMonsterCenter;
         } else {
           if(distMonsterCenter > leashRadius){
-            bestTarget = {obj:{x:cz.x,y:cz.y}, dist: distMonsterCenter, type:"portalCenter"};
+            bestTarget = {obj:{x:cz.x,y:cz.y}, type:"portalCenter"};
+            bestDistSq = distMonsterCenter*distMonsterCenter;
           } else {
             const distTargetCenter = dist(bestTarget.obj.x,bestTarget.obj.y,cz.x,cz.y);
             if(bestTarget.type!=="hero" && distTargetCenter>leashRadius){
-              bestTarget = {obj:{x:cz.x,y:cz.y}, dist: distMonsterCenter, type:"portalCenter"};
+              bestTarget = {obj:{x:cz.x,y:cz.y}, type:"portalCenter"};
+              bestDistSq = distMonsterCenter*distMonsterCenter;
             }
           }
         }
       }
 
       const target = bestTarget.obj;
-      const d = bestTarget.dist;
+      const d = Math.sqrt(bestDistSq);
       const dx=target.x-m.x, dy=target.y-m.y;
       const norm = Math.hypot(dx,dy)||1;
       const dirx=dx/norm, diry=dy/norm;
-
-      const detectRange = 260;
 
       // Mouvement
       if(bestTarget.type==="portalCenter"){
@@ -5653,6 +5655,13 @@ updateVillageHeroes(dt){
     return {x:x-camX,y:y-camY};
   }
 
+  isOnScreen(x,y,camX,camY,margin=80){
+    return (
+      x >= camX - margin && x <= camX + WINDOW_WIDTH + margin &&
+      y >= camY - margin && y <= camY + WINDOW_HEIGHT + margin
+    );
+  }
+
   draw(){
     const ctx=this.ctx;
     ctx.clearRect(0,0,this.canvas.width,this.canvas.height);
@@ -5662,29 +5671,29 @@ updateVillageHeroes(dt){
     this.drawBackground(camX,camY);
     this.drawBridges(camX,camY);
     for(const p of this.pois) this.drawPoi(p,camX,camY);
-    for(const g of this.goldItems) this.drawGold(g,camX,camY);
-    for(const p of this.potions) this.drawPotion(p,camX,camY);
+    for(const g of this.goldItems){ if(!this.isOnScreen(g.x,g.y,camX,camY)) continue; this.drawGold(g,camX,camY); }
+    for(const p of this.potions){ if(!this.isOnScreen(p.x,p.y,camX,camY)) continue; this.drawPotion(p,camX,camY); }
     if(this.manaShards){
-      for(const s of this.manaShards) this.drawManaShard(s,camX,camY);
+      for(const s of this.manaShards){ if(!this.isOnScreen(s.x,s.y,camX,camY)) continue; this.drawManaShard(s,camX,camY); }
     }
     // pré-fragments instables (avant mutation)
     if(this.preFragments){
-      for(const f of this.preFragments) this.drawPreFragment(f,camX,camY);
+      for(const f of this.preFragments){ if(!this.isOnScreen(f.x,f.y,camX,camY)) continue; this.drawPreFragment(f,camX,camY); }
     }
     // fragments stables (ressource de mutation)
     if(this.stableFragments){
-      for(const sf of this.stableFragments) this.drawStableFragment(sf,camX,camY);
+      for(const sf of this.stableFragments){ if(!this.isOnScreen(sf.x,sf.y,camX,camY)) continue; this.drawStableFragment(sf,camX,camY); }
     }
-    for(const c of this.chests) this.drawChest(c,camX,camY);
-    for(const s of this.shops) this.drawShop(s,camX,camY);
-    for(const cv of this.caravans) this.drawCaravan(cv,camX,camY);
-    for(const n of this.neutrals) this.drawNeutral(n,camX,camY);
-    for(const m of this.monsters) this.drawMonster(m,camX,camY);
-    for(const vh of this.villageHeroes) this.drawVillageHero(vh,camX,camY);
+    for(const c of this.chests){ if(!this.isOnScreen(c.x,c.y,camX,camY)) continue; this.drawChest(c,camX,camY); }
+    for(const s of this.shops){ if(!this.isOnScreen(s.x,s.y,camX,camY)) continue; this.drawShop(s,camX,camY); }
+    for(const cv of this.caravans){ if(!this.isOnScreen(cv.x,cv.y,camX,camY)) continue; this.drawCaravan(cv,camX,camY); }
+    for(const n of this.neutrals){ if(!this.isOnScreen(n.x,n.y,camX,camY)) continue; this.drawNeutral(n,camX,camY); }
+    for(const m of this.monsters){ if(!this.isOnScreen(m.x,m.y,camX,camY)) continue; this.drawMonster(m,camX,camY); }
+    for(const vh of this.villageHeroes){ if(!this.isOnScreen(vh.x,vh.y,camX,camY)) continue; this.drawVillageHero(vh,camX,camY); }
     if(this.vagabonds){
-      for(const v of this.vagabonds) this.drawVagabond(v,camX,camY);
+      for(const v of this.vagabonds){ if(!v || !this.isOnScreen(v.x,v.y,camX,camY)) continue; this.drawVagabond(v,camX,camY); }
     }
-    for(const s of this.soldiers) this.drawSoldier(s,camX,camY);
+    for(const s of this.soldiers){ if(!this.isOnScreen(s.x,s.y,camX,camY)) continue; this.drawSoldier(s,camX,camY); }
     this.drawHero(hero,camX,camY);
     this.drawEffects(camX,camY);
     this.drawUI();
