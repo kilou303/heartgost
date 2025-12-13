@@ -345,6 +345,15 @@ const CARAVAN_POTION_VALUE = 22;
 const CARAVAN_FRAGMENT_VALUE = 55;
 const POTION_SALE_PRICE = 25;
 
+// Points d'intérêt supplémentaires
+const OUTPOST_COUNT = 10;
+const RELIC_SITE_COUNT = 12;
+
+// Escarmouches dynamiques
+const FRONTIER_BATTLE_INTERVAL = 22.0;
+const FRONTIER_BATTLE_MIN_DURATION = 9.0;
+const FRONTIER_BATTLE_MAX_DURATION = 16.0;
+
 // ===================== TILESET =====================
 
 const TILE = {
@@ -1611,6 +1620,10 @@ class Game {
     this.shopSpawnTimer = 0;
     this.chestSpawnTimer = 0;
 
+    // Avant-postes, ruines et escarmouches
+    this.frontierBattles = [];
+    this.frontierBattleTimer = 0;
+
     // Vagabonds
     this.vagabondSpawnTimer = 0;
 
@@ -1630,6 +1643,7 @@ class Game {
 
     this.createPois();
     this.buildTileMap();
+    this.sanitizeSpecialPoiPlacement();
     this.spawnVillageHeroes();
 
     this.logEvent(`Nouveau héros : ${this.hero.name} (Niv ${this.hero.level}).`);
@@ -1791,6 +1805,84 @@ class Game {
       zonesCreated++;
     }
 
+    this.outposts = outposts;
+
+    // Avant-postes alignés sur les routes
+    const outposts = [];
+    let outAttempts=0;
+    const desiredOutposts = Math.min(OUTPOST_COUNT, this.roads.length);
+    while(outposts.length<desiredOutposts && outAttempts<220){
+      outAttempts++;
+      const rd = randChoice(this.roads);
+      if(!rd) break;
+      const ratio = 0.25 + Math.random()*0.5;
+      const ox = rd.ax + (rd.bx-rd.ax)*ratio + randInt(-45,45);
+      const oy = rd.ay + (rd.by-rd.ay)*ratio + randInt(-45,45);
+      if(ox<140 || oy<140 || ox>WORLD_WIDTH-140 || oy>WORLD_HEIGHT-140) continue;
+
+      let blocked=false;
+      for(const t of towns){
+        if(dist(ox,oy,t.x,t.y)<140){blocked=true;break;}
+      }
+      if(blocked) continue;
+      for(const op of outposts){
+        if(dist(ox,oy,op.x,op.y)<180){blocked=true;break;}
+      }
+      if(blocked) continue;
+
+      const name = `Avant-poste ${outposts.length+1}`;
+      const outpost={
+        type:"outpost",
+        name,
+        x:ox,
+        y:oy,
+        allianceId:null,
+        allianceName:null,
+        allianceColor:null,
+        stability:1.0,
+        visited:false
+      };
+      outposts.push(outpost);
+      this.pois.push(outpost);
+    }
+
+    // Sites de reliques/ruines isolées
+    const relicNames = ["Sanctuaire brisé","Ruines stellaires","Autel oublié","Tour effondrée","Vestiges runiques"];
+    let relics=0, relicTries=0;
+    while(relics<RELIC_SITE_COUNT && relicTries<800){
+      relicTries++;
+      const rx = 200+Math.random()*(WORLD_WIDTH-400);
+      const ry = 200+Math.random()*(WORLD_HEIGHT-400);
+      if(rx<120 || ry<120 || rx>WORLD_WIDTH-120 || ry>WORLD_HEIGHT-120) continue;
+
+      let nearTown=false;
+      for(const t of towns){
+        if(dist(rx,ry,t.x,t.y)<260){nearTown=true;break;}
+      }
+      if(nearTown) continue;
+      let nearZone=false;
+      for(const p of this.pois){
+        if((p.type==="zone" || p.type==="forest") && dist(rx,ry,p.x,p.y)<150){nearZone=true;break;}
+      }
+      if(nearZone) continue;
+      let nearOutpost=false;
+      for(const op of outposts){
+        if(dist(rx,ry,op.x,op.y)<160){nearOutpost=true;break;}
+      }
+      if(nearOutpost) continue;
+
+      const relic={
+        type:"relic",
+        name:randChoice(relicNames),
+        x:rx,
+        y:ry,
+        rewardClaimed:false,
+        guardianLevel:randInt(2,8)
+      };
+      this.pois.push(relic);
+      relics++;
+    }
+
     // Placement du héros près de la ville la plus centrale (pour le tout premier héros)
     if(towns.length>0){
       const centerTown = towns.reduce((best,t)=>{
@@ -1894,6 +1986,9 @@ class Game {
       alliance.towns.push(town);
       idx++;
     }
+
+    this.outposts = this.pois.filter(p=>p.type==="outpost");
+    this.assignOutpostControl();
   }
 
 
@@ -1957,6 +2052,23 @@ class Game {
           // base neutre, petit biais aléatoire
           a.relations[b.id] = randInt(-20,20);
         }
+      }
+    }
+  }
+
+  assignOutpostControl(){
+    if(!this.outposts || this.outposts.length===0) return;
+    const towns = this.towns && this.towns.length>0 ? this.towns : this.pois.filter(p=>p.type==="town");
+    for(const op of this.outposts){
+      const nearest = towns.filter(t=>t && !t.isDemonTown).reduce((best,t)=>{
+        const d = dist(op.x,op.y,t.x,t.y);
+        if(!best || d<best.d) return {t,d};
+        return best;
+      },null);
+      if(nearest && nearest.t){
+        op.allianceId = nearest.t.allianceId;
+        op.allianceName = nearest.t.allianceName;
+        op.allianceColor = nearest.t.allianceColor;
       }
     }
   }
@@ -2387,6 +2499,96 @@ class Game {
     }
   }
 
+  maybeLaunchFrontierBattle(){
+    const activeWars = (this.allianceWars||[]).filter(w=>w && w.active);
+    if(activeWars.length===0) return;
+
+    const war = randChoice(activeWars);
+    const allianceA = this.getAllianceById(war.a);
+    const allianceB = this.getAllianceById(war.b);
+    if(!allianceA || !allianceB) return;
+
+    const townsA = (allianceA.towns||[]).filter(t=>t && !t.isDemonTown);
+    const townsB = (allianceB.towns||[]).filter(t=>t && !t.isDemonTown);
+    if(townsA.length===0 || townsB.length===0) return;
+
+    let bestPair=null;
+    for(const ta of townsA){
+      for(const tb of townsB){
+        const d = dist(ta.x,ta.y,tb.x,tb.y);
+        if(d>950) continue;
+        if(!bestPair || d<bestPair.d){
+          bestPair = {a:ta,b:tb,d};
+        }
+      }
+    }
+    if(!bestPair) return;
+
+    const attackerAllianceId = war.frontMomentum && war.frontMomentum<0 ? war.b : war.a;
+    const defenderAllianceId = attackerAllianceId === war.a ? war.b : war.a;
+    const attackerTown = attackerAllianceId === allianceA.id ? bestPair.a : bestPair.b;
+    const defenderTown = attackerAllianceId === allianceA.id ? bestPair.b : bestPair.a;
+
+    let spotX = (bestPair.a.x + bestPair.b.x)/2;
+    let spotY = (bestPair.a.y + bestPair.b.y)/2;
+    const anchor = (this.outposts||[]).find(op=>{
+      if(op.allianceId==null) return false;
+      const nearAttacker = op.allianceId===attackerAllianceId || op.allianceId===defenderAllianceId;
+      return nearAttacker && dist(op.x,op.y,spotX,spotY)<170;
+    });
+    if(anchor){
+      spotX = anchor.x;
+      spotY = anchor.y;
+    }
+
+    const duration = FRONTIER_BATTLE_MIN_DURATION + Math.random()*(FRONTIER_BATTLE_MAX_DURATION-FRONTIER_BATTLE_MIN_DURATION);
+    const intensity = 0.65 + Math.random()*0.6;
+    this.frontierBattles.push({
+      attackerAllianceId,
+      defenderAllianceId,
+      from: attackerTown,
+      to: defenderTown,
+      x: spotX,
+      y: spotY,
+      remaining: duration,
+      intensity
+    });
+
+    this.logEvent(`Escarmouche frontalière : ${attackerTown.name} met la pression sur ${defenderTown.name}.`);
+  }
+
+  updateFrontierBattles(dt){
+    if(!this.frontierBattles) this.frontierBattles = [];
+
+    this.frontierBattleTimer = (this.frontierBattleTimer||0) + dt;
+    if(this.frontierBattleTimer >= FRONTIER_BATTLE_INTERVAL){
+      this.frontierBattleTimer = 0;
+      this.maybeLaunchFrontierBattle();
+    }
+
+    const remaining = [];
+    for(const fb of this.frontierBattles){
+      const intensity = fb.intensity || 1.0;
+      fb.remaining -= dt;
+
+      if(fb.to && fb.attackerAllianceId!=null){
+        this.applySiegeDamageOnTown(fb.to, fb.attackerAllianceId, dt, intensity);
+      }
+      if(fb.from && fb.defenderAllianceId!=null){
+        this.applySiegeDamageOnTown(fb.from, fb.defenderAllianceId, dt, intensity*0.55);
+      }
+
+      if(fb.remaining>0){
+        remaining.push(fb);
+      } else {
+        const name = fb.to ? fb.to.name : "la frontière";
+        this.logEvent(`La bataille près de ${name} s'essouffle, laissant des ruines fumantes.`);
+      }
+    }
+
+    this.frontierBattles = remaining;
+  }
+
   applySiegeDamageOnTown(town, attackerAllianceId, dt, factor=1.0){
     if(!town) return;
     if(town.isDemonTown) return;
@@ -2439,6 +2641,8 @@ class Game {
 
     const newName = newAlliance ? newAlliance.name : "une alliance inconnue";
     this.logEvent(`${town.name} est conquise par ${newName} ! Or pillé : ${loot}.`);
+
+    this.assignOutpostControl();
   }
 
   generateRivers(){
@@ -2576,6 +2780,19 @@ class Game {
     const gy = Math.floor(y / TILE_SIZE);
     if(gx<0 || gy<0 || gx>=this.tileCols || gy>=this.tileRows) return TILE.VOID;
     return this.tileMap[gy][gx];
+  }
+
+  sanitizeSpecialPoiPlacement(){
+    if(!this.tileMap || this.tileMap.length===0) return;
+    for(const poi of this.pois){
+      if(poi.type!=="outpost" && poi.type!=="relic") continue;
+      let attempts=0;
+      while(attempts<6 && this.getTileAt(poi.x,poi.y)===TILE.WATER){
+        poi.x = clamp(poi.x + randInt(-90,90),60,WORLD_WIDTH-60);
+        poi.y = clamp(poi.y + randInt(-90,90),60,WORLD_HEIGHT-60);
+        attempts++;
+      }
+    }
   }
 
   getMoveMultiplierAt(x,y,hero=null){
@@ -3053,6 +3270,7 @@ spawnNeutral(){
 
     // Guerres d'alliances
     this.updateAllianceWars(dt);
+    this.updateFrontierBattles(dt);
 
     hero.update(dt,this);
     // Le héros peut attaquer directement une ville démoniaque pour une quête de sauvetage
@@ -5389,6 +5607,45 @@ updateVillageHeroes(dt){
       }
       return true;
     });
+
+    // Avant-postes : pause défensive et ravitaillement
+    for(const op of (this.outposts||[])){
+      if(dist(hero.x,hero.y,op.x,op.y)<42){
+        const cooldownOk = !op.lastSupport || (this.worldTime - op.lastSupport) > 26;
+        if(cooldownOk){
+          op.lastSupport = this.worldTime;
+          const heal = Math.floor(hero.maxHp*0.18);
+          hero.hp = Math.min(hero.maxHp, hero.hp + heal);
+          hero.mp = hero.maxMp;
+          this.logEvent(`Le héros se ravitaille à ${op.name} (+${heal} PV, mana régénérée).`);
+        }
+      }
+    }
+
+    // Ruines / reliques : mini-évènements d'exploration
+    for(const poi of this.pois){
+      if(poi.type!=="relic" || poi.rewardClaimed) continue;
+      if(dist(hero.x,hero.y,poi.x,poi.y)<34){
+        const xpGain = randInt(35,70) + (poi.guardianLevel||0)*5;
+        const goldGain = randInt(40,90);
+        hero.gainXp(xpGain);
+        hero.gold += goldGain;
+        poi.rewardClaimed = true;
+
+        const nearestTown = (this.towns||[]).reduce((best,t)=>{
+          if(!t || t.isDemonTown) return best;
+          const d = dist(poi.x,poi.y,t.x,t.y);
+          if(!best || d<best.d) return {t,d};
+          return best;
+        },null);
+        if(nearestTown && nearestTown.t){
+          nearestTown.t.gold = (nearestTown.t.gold||0) + 40;
+          this.logEvent(`${nearestTown.t.name} revendique des artefacts de ${poi.name} (+40 or).`);
+        }
+
+        this.logEvent(`Exploration de ${poi.name} : +${xpGain} XP, +${goldGain} or.`);
+      }
+    }
   }
 
   // ---------- PORTAILS (zones) EN VAGUES ----------
@@ -5642,6 +5899,7 @@ updateVillageHeroes(dt){
     const camY = clamp(hero.y - WINDOW_HEIGHT/2,0,WORLD_HEIGHT-WINDOW_HEIGHT);
     this.drawBackground(camX,camY);
     this.drawBridges(camX,camY);
+    this.drawFrontierBattles(camX,camY);
     for(const p of this.pois) this.drawPoi(p,camX,camY);
     for(const g of this.goldItems) this.drawGold(g,camX,camY);
     for(const p of this.potions) this.drawPotion(p,camX,camY);
@@ -5825,6 +6083,31 @@ drawBackground(camX,camY){
     }
   }
 
+  drawFrontierBattles(camX,camY){
+    if(!this.frontierBattles || this.frontierBattles.length===0) return;
+    const ctx=this.ctx;
+    for(const fb of this.frontierBattles){
+      const s=this.worldToScreen(fb.x,fb.y,camX,camY);
+      const pulse = 1 + Math.sin(performance.now()/200)*0.1;
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(s.x,s.y,18*pulse,0,Math.PI*2);
+      ctx.fillStyle="rgba(255,138,128,0.18)";
+      ctx.fill();
+      ctx.strokeStyle="#ef5350";
+      ctx.setLineDash([4,3]);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.beginPath();
+      ctx.moveTo(s.x-6,s.y-6); ctx.lineTo(s.x+6,s.y+6);
+      ctx.moveTo(s.x+6,s.y-6); ctx.lineTo(s.x-6,s.y+6);
+      ctx.strokeStyle="#ffcdd2";
+      ctx.lineWidth=2;
+      ctx.stroke();
+      ctx.restore();
+    }
+  }
+
   drawPoi(p,camX,camY){
     const ctx=this.ctx;
     const s=this.worldToScreen(p.x,p.y,camX,camY);
@@ -5964,6 +6247,41 @@ drawBackground(camX,camY){
       ctx.fillStyle="#ede7f6";
       ctx.textAlign="center";
       ctx.fillText(`Portail Lv ${lvl}`,s.x,s.y+r+12);
+    } else if(p.type==="outpost"){
+      const w=22,h=16;
+      ctx.fillStyle="#546e7a";
+      ctx.strokeStyle=p.allianceColor || "#90a4ae";
+      ctx.lineWidth=2;
+      ctx.fillRect(s.x-w/2,s.y-h/2,w,h);
+      ctx.strokeRect(s.x-w/2,s.y-h/2,w,h);
+      ctx.fillStyle="#263238";
+      ctx.fillRect(s.x-3,s.y-h/2-5,6,5);
+      ctx.fillStyle="#90a4ae";
+      ctx.fillRect(s.x-4,s.y-h/2-8,8,3);
+      ctx.font="8px Helvetica";
+      ctx.fillStyle=p.allianceColor || "#cfd8dc";
+      ctx.textAlign="center";
+      ctx.fillText(p.name || "Avant-poste", s.x, s.y+h+10);
+    } else if(p.type==="relic"){
+      const r=16;
+      ctx.beginPath();
+      ctx.arc(s.x,s.y,r,0,Math.PI*2);
+      ctx.fillStyle="rgba(255,215,130,0.2)";
+      ctx.fill();
+      ctx.strokeStyle="#ffd180";
+      ctx.setLineDash([3,3]);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.beginPath();
+      ctx.moveTo(s.x-r/2,s.y+r/3);
+      ctx.lineTo(s.x-r/4,s.y-r/2);
+      ctx.lineTo(s.x+r/2,s.y-r/3);
+      ctx.strokeStyle="#ffa726";
+      ctx.stroke();
+      ctx.font="8px Helvetica";
+      ctx.fillStyle="#ffe0b2";
+      ctx.textAlign="center";
+      ctx.fillText(p.name || "Relique", s.x, s.y+r+10);
     }
 
     ctx.restore();
