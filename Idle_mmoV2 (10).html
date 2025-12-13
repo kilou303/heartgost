@@ -45,10 +45,12 @@ const YEAR_DURATION = 20.0;      // 20s -> 1 an
 
 const MONSTER_LIMIT = 600; // limite globale de démons vivants
 
-// Spawn démons : chaque nid (forêt ou zone) spawn toutes les 4s, max de démons configurables
+// Spawn démons : chaque nid (forêt ou zone) spawn périodiquement, max de démons configurables
 const NEST_SPAWN_INTERVAL = 4.0;
-const NEST_MONSTER_LIMIT = 4;           // par défaut
-const FOREST_NEST_MONSTER_LIMIT = 6;    // nombre max de démons par nid en forêt (facile à ajuster)
+const NEST_MONSTER_LIMIT = 4;              // par défaut
+const FOREST_NEST_MONSTER_LIMIT = 3;       // nombre max de démons par nid en forêt
+const FOREST_NEST_SPAWN_INTERVAL = 10.0;   // intervalle spécifique aux nids en forêt
+const FOREST_MONSTER_GLOBAL_LIMIT = 120;   // limite globale dédiée aux démons issus des forêts
 
 // Neutres (vaches/poules)
 const NEUTRAL_SPAWN_INTERVAL = 25.0;
@@ -1588,7 +1590,8 @@ class Game {
         x,y,
         level:randInt(1,6),
         portal:false,
-        spawnTimer:Math.random()*NEST_SPAWN_INTERVAL
+        isForest:true,
+        spawnTimer:Math.random()*FOREST_NEST_SPAWN_INTERVAL
       });
     }
 
@@ -1621,6 +1624,7 @@ class Game {
         x:zx,y:zy,
         level:lvl,
         portal:true,
+        isForest:false,
         spawnTimer:Math.random()*NEST_SPAWN_INTERVAL
       });
       zonesCreated++;
@@ -2759,22 +2763,46 @@ spawnNeutral(){
     this.worldTime += dt;
     this.worldYears = Math.floor(this.worldTime / YEAR_DURATION);
 
+    // Comptage des monstres par nid pour limiter les filtrages coûteux
+    const monsterCountByNest = new Map();
+    let forestMonsterCount = 0;
+    for(const m of this.monsters){
+      if(m.dead || m.inDungeon || !m.nest) continue;
+      monsterCountByNest.set(m.nest, (monsterCountByNest.get(m.nest) || 0) + 1);
+      if(m.nest.isForest) forestMonsterCount++;
+    }
+
     // Spawn démons par nid (forêt/zone)
     for(const nest of this.demonNests){
-      nest.spawnTimer += dt;
-      if(nest.spawnTimer>=NEST_SPAWN_INTERVAL){
-        nest.spawnTimer=0;
-        const countHere = this.monsters.filter(m=>m.nest===nest && !m.inDungeon).length;
+      const isForestNest =
+        nest.isForest ?? this.pois.some(p=>p.type==="forest" && dist(p.x,p.y,nest.x,nest.y)<20);
+      nest.isForest = isForestNest;
 
-        // Limite différente pour les nids de forêt (plus de démons possibles par forêt)
+      const spawnInterval = isForestNest ? FOREST_NEST_SPAWN_INTERVAL : NEST_SPAWN_INTERVAL;
+
+      nest.spawnTimer += dt;
+      if(nest.spawnTimer>=spawnInterval){
+        nest.spawnTimer=0;
+        const countHere = monsterCountByNest.get(nest) || 0;
+
+        // Limite différente pour les nids de forêt (cap spécifique)
         let nestLimit = NEST_MONSTER_LIMIT;
-        const isForestNest = this.pois.some(p=>p.type==="forest" && dist(p.x,p.y,nest.x,nest.y)<20);
         if(isForestNest){
           nestLimit = FOREST_NEST_MONSTER_LIMIT;
+          if(forestMonsterCount >= FOREST_MONSTER_GLOBAL_LIMIT){
+            continue; // surcharge globale des forêts, on met en pause les spawns
+          }
         }
 
         if(countHere < nestLimit && this.monsters.length < MONSTER_LIMIT){
           this.spawnMonsterAtNest(nest);
+          if(isForestNest){
+            forestMonsterCount++;
+            monsterCountByNest.set(nest, countHere + 1);
+          }
+          else {
+            monsterCountByNest.set(nest, countHere + 1);
+          }
         }
       }
     }
